@@ -16,7 +16,9 @@
     --ink: #e7e5df;
     --ink-dim: #9aa0a8;
     --teal: #5dcaa5;
-    --red: #e24b4a;
+    --blaze: #ff3b30;
+    --warm: #e2724b;
+    --dim: #8a4a45;
     --amber: #ef9f27;
     --green: #639922;
   }
@@ -34,78 +36,67 @@
     z-index: 2;
   }
 
-  #title {
-    top: 16px; left: 16px;
-    max-width: 320px;
-    padding: 18px 20px;
-  }
+  #title { top: 16px; left: 16px; max-width: 330px; padding: 18px 20px; }
   #title h1 {
     font-family: "Fraunces", serif;
-    font-weight: 300;
-    font-size: 30px;
-    line-height: 1;
-    margin: 0;
+    font-weight: 300; font-size: 30px; line-height: 1; margin: 0;
   }
   #title .place {
-    font-size: 12px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--ink-dim);
-    margin: 8px 0 12px;
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-dim); margin: 8px 0 12px;
   }
-  #title p {
-    font-size: 13px;
-    line-height: 1.6;
-    margin: 0;
-    color: var(--ink);
-  }
+  #title p { font-size: 13px; line-height: 1.6; margin: 0; }
   #title .note {
-    font-size: 11px;
-    line-height: 1.6;
-    color: var(--ink-dim);
-    margin-top: 12px;
-    border-top: 1px solid var(--line);
-    padding-top: 12px;
+    font-size: 11px; line-height: 1.6; color: var(--ink-dim);
+    margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
   }
 
-  #legend {
-    bottom: 16px; left: 16px;
-    padding: 14px 18px;
-    min-width: 220px;
-  }
-  #legend .head {
-    font-size: 11px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--ink-dim);
-    margin-bottom: 10px;
+  #legend { bottom: 16px; left: 16px; padding: 14px 18px; min-width: 250px; }
+  .head {
+    font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--ink-dim); margin-bottom: 10px;
   }
   .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    padding: 4px 0;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12px; padding: 4px 0;
   }
-  .dot {
-    width: 11px; height: 11px;
-    border-radius: 50%;
-    flex: none;
-  }
+  .dot { border-radius: 50%; flex: none; }
   .row .label { flex: 1; }
   .row .count { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .sub {
+    font-size: 11px; color: var(--ink-dim); margin: 10px 0 8px;
+    border-top: 1px solid var(--line); padding-top: 10px;
+  }
   .tagline {
-    font-size: 11px;
-    color: var(--ink-dim);
-    margin-top: 12px;
-    border-top: 1px solid var(--line);
-    padding-top: 10px;
-    font-style: italic;
+    font-size: 11px; color: var(--ink-dim); margin-top: 12px;
+    border-top: 1px solid var(--line); padding-top: 10px; font-style: italic;
   }
 
+  #traps { top: 16px; right: 16px; padding: 14px 18px; width: 265px; }
+  .trap {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 12px; padding: 5px 0; cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .trap:last-child { border-bottom: 0; }
+  .trap:hover .street { color: var(--blaze); }
+  .trap .n {
+    color: var(--blaze); font-weight: 500;
+    font-variant-numeric: tabular-nums; min-width: 22px; text-align: right;
+  }
+  .trap .street { flex: 1; color: var(--ink); }
+  #traps .foot { font-size: 11px; color: var(--ink-dim); margin-top: 10px; }
+
+  .maplibregl-popup-content {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 14px;
+    font-family: "DM Mono", monospace; color: var(--ink);
+  }
+  .maplibregl-popup-tip { border-top-color: var(--line) !important; }
   .maplibregl-ctrl-attrib { font-family: "DM Mono", monospace; font-size: 10px; }
 
-  @media (max-width: 640px) {
+  @media (max-width: 820px) {
+    #traps { display: none; }
     #title { max-width: none; right: 16px; }
     #legend { right: 16px; }
   }
@@ -118,16 +109,25 @@
 <div id="title" class="panel">
   <h1>Egress Index</h1>
   <div class="place">Santa Rosa, California</div>
-  <p>How many separate ways out each spot has. Red means one road. If it closes, that area is cut off.</p>
+  <p>Some neighborhoods look like they have options. Close one street and dozens of blocks have nowhere to go. This map finds them.</p>
   <div class="note">Planning tool, not live navigation. Built from road shapes, not any current fire.</div>
 </div>
 
+<div id="traps" class="panel">
+  <div class="head">Biggest traps</div>
+  <div id="trap-list"></div>
+  <div class="foot">Blocks stranded if that one street closes. Click to fly there.</div>
+</div>
+
 <div id="legend" class="panel">
-  <div class="head">Ways out</div>
-  <div class="row"><span class="dot" style="background:var(--red)"></span><span class="label">One way out</span><span class="count" id="c-red">&middot;</span></div>
-  <div class="row"><span class="dot" style="background:var(--amber)"></span><span class="label">Two ways out</span><span class="count" id="c-amber">&middot;</span></div>
-  <div class="row"><span class="dot" style="background:var(--green)"></span><span class="label">Three or more</span><span class="count" id="c-green">&middot;</span></div>
-  <div class="row"><span class="dot" style="background:var(--teal)"></span><span class="label">Safety road</span><span class="count" id="c-teal">&middot;</span></div>
+  <div class="head">One way out</div>
+  <div class="row"><span class="dot" style="background:var(--blaze);width:13px;height:13px"></span><span class="label">21+ blocks trapped</span><span class="count" id="c-blaze">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--warm);width:10px;height:10px"></span><span class="label">6 to 20 trapped</span><span class="count" id="c-warm">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--dim);width:7px;height:7px"></span><span class="label">Dead end street</span><span class="count" id="c-dim">&middot;</span></div>
+  <div class="sub">More ways out</div>
+  <div class="row"><span class="dot" style="background:var(--amber);width:8px;height:8px"></span><span class="label">Two ways out</span><span class="count" id="c-amber">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--green);width:8px;height:8px"></span><span class="label">Three or more</span><span class="count" id="c-green">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--teal);width:8px;height:8px"></span><span class="label">Safety road</span><span class="count" id="c-teal">&middot;</span></div>
   <div class="tagline">Someone has to map this mess.</div>
 </div>
 
@@ -137,11 +137,10 @@
     container: "map",
     style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
     center: [-122.72, 38.45],
-    zoom: 11.3,
+    zoom: 11.2,
     attributionControl: { compact: true },
   });
-
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
 
   map.on("load", async () => {
     let data;
@@ -149,35 +148,31 @@
       const res = await fetch("./egress_santa_rosa.geojson");
       data = await res.json();
     } catch (err) {
-      document.getElementById("legend").querySelector(".head").textContent =
-        "Data file not found next to index.html";
+      document.querySelector("#legend .head").textContent = "Data file not found";
       return;
     }
 
-    // Live counts for the legend, straight from the data.
-    const tally = { red: 0, amber: 0, green: 0, teal: 0 };
-    for (const f of data.features) {
-      const p = f.properties;
-      if (p.safe) tally.teal++;
-      else if (p.score <= 1) tally.red++;
-      else if (p.score === 2) tally.amber++;
-      else tally.green++;
-    }
-    const fmt = (n) => n.toLocaleString();
-    document.getElementById("c-red").textContent = fmt(tally.red);
-    document.getElementById("c-amber").textContent = fmt(tally.amber);
-    document.getElementById("c-green").textContent = fmt(tally.green);
-    document.getElementById("c-teal").textContent = fmt(tally.teal);
-
     map.addSource("egress", { type: "geojson", data });
 
-    // Color each point by how many ways out it has.
+    // A red only matters in proportion to how much it strands.
+    // 21+ blazes, 6 to 20 warms, a lone dead end fades back.
     const color = [
       "case",
       ["get", "safe"], "#5dcaa5",
-      ["<=", ["get", "score"], 1], "#e24b4a",
+      [">", ["get", "score"], 2], "#639922",
       ["==", ["get", "score"], 2], "#ef9f27",
-      "#639922",
+      [">=", ["coalesce", ["get", "pocket"], 0], 21], "#ff3b30",
+      [">=", ["coalesce", ["get", "pocket"], 0], 6], "#e2724b",
+      "#8a4a45",
+    ];
+
+    const weight = [
+      "case",
+      ["get", "safe"], 0.55,
+      [">=", ["coalesce", ["get", "pocket"], 0], 21], 1.9,
+      [">=", ["coalesce", ["get", "pocket"], 0], 6], 1.35,
+      ["<=", ["get", "score"], 1], 0.75,
+      1.0,
     ];
 
     map.addLayer({
@@ -187,31 +182,96 @@
       paint: {
         "circle-color": color,
         "circle-radius": [
-          "interpolate", ["linear"], ["zoom"],
-          10, 2, 12, 3.4, 15, 7,
+          "*", weight,
+          ["interpolate", ["linear"], ["zoom"], 10, 2.2, 12, 3.6, 15, 7.5],
         ],
-        // Safety roads sit back so the red and green read first.
-        "circle-opacity": ["case", ["get", "safe"], 0.4, 0.95],
-        // A soft ring on the single-egress points so they pop.
-        "circle-stroke-color": "#f09595",
+        "circle-opacity": [
+          "case",
+          ["get", "safe"], 0.35,
+          [">=", ["coalesce", ["get", "pocket"], 0], 21], 1,
+          [">=", ["coalesce", ["get", "pocket"], 0], 6], 0.9,
+          0.6,
+        ],
+        "circle-stroke-color": "#ff3b30",
+        "circle-stroke-opacity": 0.45,
         "circle-stroke-width": [
           "case",
-          ["all", ["!", ["get", "safe"]], ["<=", ["get", "score"], 1]], 0.8,
+          [">=", ["coalesce", ["get", "pocket"], 0], 21], 1.1,
           0,
         ],
       },
     });
 
-    // Click a point to read its score.
+    // Legend counts and the trap ranking, both read straight from the data.
+    const t = { blaze: 0, warm: 0, dim: 0, amber: 0, green: 0, teal: 0 };
+    const traps = new Map();
+
+    for (const f of data.features) {
+      const p = f.properties;
+      if (p.safe) { t.teal++; continue; }
+      if (p.score === 2) { t.amber++; continue; }
+      if (p.score > 2) { t.green++; continue; }
+
+      const pocket = p.pocket || 0;
+      if (pocket >= 21) t.blaze++;
+      else if (pocket >= 6) t.warm++;
+      else t.dim++;
+
+      // Many nodes report the same trap. Keep the biggest per street.
+      if (p.road && pocket >= 6) {
+        const prev = traps.get(p.road);
+        if (!prev || pocket > prev.pocket) {
+          traps.set(p.road, { pocket, lngLat: f.geometry.coordinates });
+        }
+      }
+    }
+
+    const fmt = (n) => n.toLocaleString();
+    document.getElementById("c-blaze").textContent = fmt(t.blaze);
+    document.getElementById("c-warm").textContent = fmt(t.warm);
+    document.getElementById("c-dim").textContent = fmt(t.dim);
+    document.getElementById("c-amber").textContent = fmt(t.amber);
+    document.getElementById("c-green").textContent = fmt(t.green);
+    document.getElementById("c-teal").textContent = fmt(t.teal);
+
+    const ranked = [...traps.entries()]
+      .sort((a, b) => b[1].pocket - a[1].pocket)
+      .slice(0, 8);
+
+    const list = document.getElementById("trap-list");
+    for (const [road, info] of ranked) {
+      const row = document.createElement("div");
+      row.className = "trap";
+      row.innerHTML = '<span class="n"></span><span class="street"></span>';
+      row.querySelector(".n").textContent = info.pocket;
+      row.querySelector(".street").textContent = road;
+      row.addEventListener("click", () => {
+        map.flyTo({ center: info.lngLat, zoom: 15.2, duration: 1400 });
+      });
+      list.appendChild(row);
+    }
+
     map.on("click", "egress-points", (e) => {
       const p = e.features[0].properties;
-      const text = p.safe
-        ? "Safety road (already a way out)"
-        : (p.score <= 1 ? "One way out" : p.score === 2 ? "Two ways out" : "Three or more ways out");
-      new maplibregl.Popup({ closeButton: false })
-        .setLngLat(e.lngLat)
-        .setHTML('<div style="font-family:\'DM Mono\',monospace;font-size:12px">' + text + "</div>")
-        .addTo(map);
+      let html;
+      if (p.safe) {
+        html = "<b>Safety road</b><br>Already a way out.";
+      } else if (p.score >= 3) {
+        html = "<b>Three or more ways out</b>";
+      } else if (p.score === 2) {
+        html = "<b>Two ways out</b>";
+      } else {
+        html = "<b>One way out</b>";
+        if (p.road) {
+          html += "<br>Everything here leaves by<br><b>" + p.road + "</b>";
+        }
+        if (p.pocket) {
+          html += "<br><span style='color:#9aa0a8'>" + p.pocket +
+                  " blocks share this exit</span>";
+        }
+      }
+      new maplibregl.Popup({ closeButton: false, maxWidth: "230px" })
+        .setLngLat(e.lngLat).setHTML(html).addTo(map);
     });
     map.on("mouseenter", "egress-points", () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", "egress-points", () => (map.getCanvas().style.cursor = ""));
