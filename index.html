@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Egress Index / Santa Rosa</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #16191e;
+    --line: #2a2f37;
+    --ink: #e7e5df;
+    --ink-dim: #9aa0a8;
+    --teal: #5dcaa5;
+    --red: #e24b4a;
+    --amber: #ef9f27;
+    --green: #639922;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); }
+  #map { position: absolute; inset: 0; }
+
+  .panel {
+    position: absolute;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--ink);
+    font-family: "DM Mono", monospace;
+    z-index: 2;
+  }
+
+  #title {
+    top: 16px; left: 16px;
+    max-width: 320px;
+    padding: 18px 20px;
+  }
+  #title h1 {
+    font-family: "Fraunces", serif;
+    font-weight: 300;
+    font-size: 30px;
+    line-height: 1;
+    margin: 0;
+  }
+  #title .place {
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin: 8px 0 12px;
+  }
+  #title p {
+    font-size: 13px;
+    line-height: 1.6;
+    margin: 0;
+    color: var(--ink);
+  }
+  #title .note {
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--ink-dim);
+    margin-top: 12px;
+    border-top: 1px solid var(--line);
+    padding-top: 12px;
+  }
+
+  #legend {
+    bottom: 16px; left: 16px;
+    padding: 14px 18px;
+    min-width: 220px;
+  }
+  #legend .head {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin-bottom: 10px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    padding: 4px 0;
+  }
+  .dot {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .row .label { flex: 1; }
+  .row .count { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .tagline {
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-top: 12px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+    font-style: italic;
+  }
+
+  .maplibregl-ctrl-attrib { font-family: "DM Mono", monospace; font-size: 10px; }
+
+  @media (max-width: 640px) {
+    #title { max-width: none; right: 16px; }
+    #legend { right: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="title" class="panel">
+  <h1>Egress Index</h1>
+  <div class="place">Santa Rosa, California</div>
+  <p>How many separate ways out each spot has. Red means one road. If it closes, that area is cut off.</p>
+  <div class="note">Planning tool, not live navigation. Built from road shapes, not any current fire.</div>
+</div>
+
+<div id="legend" class="panel">
+  <div class="head">Ways out</div>
+  <div class="row"><span class="dot" style="background:var(--red)"></span><span class="label">One way out</span><span class="count" id="c-red">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--amber)"></span><span class="label">Two ways out</span><span class="count" id="c-amber">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--green)"></span><span class="label">Three or more</span><span class="count" id="c-green">&middot;</span></div>
+  <div class="row"><span class="dot" style="background:var(--teal)"></span><span class="label">Safety road</span><span class="count" id="c-teal">&middot;</span></div>
+  <div class="tagline">Someone has to map this mess.</div>
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+  const map = new maplibregl.Map({
+    container: "map",
+    style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    center: [-122.72, 38.45],
+    zoom: 11.3,
+    attributionControl: { compact: true },
+  });
+
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+
+  map.on("load", async () => {
+    let data;
+    try {
+      const res = await fetch("./egress_santa_rosa.geojson");
+      data = await res.json();
+    } catch (err) {
+      document.getElementById("legend").querySelector(".head").textContent =
+        "Data file not found next to index.html";
+      return;
+    }
+
+    // Live counts for the legend, straight from the data.
+    const tally = { red: 0, amber: 0, green: 0, teal: 0 };
+    for (const f of data.features) {
+      const p = f.properties;
+      if (p.safe) tally.teal++;
+      else if (p.score <= 1) tally.red++;
+      else if (p.score === 2) tally.amber++;
+      else tally.green++;
+    }
+    const fmt = (n) => n.toLocaleString();
+    document.getElementById("c-red").textContent = fmt(tally.red);
+    document.getElementById("c-amber").textContent = fmt(tally.amber);
+    document.getElementById("c-green").textContent = fmt(tally.green);
+    document.getElementById("c-teal").textContent = fmt(tally.teal);
+
+    map.addSource("egress", { type: "geojson", data });
+
+    // Color each point by how many ways out it has.
+    const color = [
+      "case",
+      ["get", "safe"], "#5dcaa5",
+      ["<=", ["get", "score"], 1], "#e24b4a",
+      ["==", ["get", "score"], 2], "#ef9f27",
+      "#639922",
+    ];
+
+    map.addLayer({
+      id: "egress-points",
+      type: "circle",
+      source: "egress",
+      paint: {
+        "circle-color": color,
+        "circle-radius": [
+          "interpolate", ["linear"], ["zoom"],
+          10, 2, 12, 3.4, 15, 7,
+        ],
+        // Safety roads sit back so the red and green read first.
+        "circle-opacity": ["case", ["get", "safe"], 0.4, 0.95],
+        // A soft ring on the single-egress points so they pop.
+        "circle-stroke-color": "#f09595",
+        "circle-stroke-width": [
+          "case",
+          ["all", ["!", ["get", "safe"]], ["<=", ["get", "score"], 1]], 0.8,
+          0,
+        ],
+      },
+    });
+
+    // Click a point to read its score.
+    map.on("click", "egress-points", (e) => {
+      const p = e.features[0].properties;
+      const text = p.safe
+        ? "Safety road (already a way out)"
+        : (p.score <= 1 ? "One way out" : p.score === 2 ? "Two ways out" : "Three or more ways out");
+      new maplibregl.Popup({ closeButton: false })
+        .setLngLat(e.lngLat)
+        .setHTML('<div style="font-family:\'DM Mono\',monospace;font-size:12px">' + text + "</div>")
+        .addTo(map);
+    });
+    map.on("mouseenter", "egress-points", () => (map.getCanvas().style.cursor = "pointer"));
+    map.on("mouseleave", "egress-points", () => (map.getCanvas().style.cursor = ""));
+  });
+</script>
+</body>
+</html>
