@@ -159,20 +159,30 @@
     const color = [
       "case",
       ["get", "safe"], "#5dcaa5",
-      [">", ["get", "score"], 2], "#639922",
-      ["==", ["get", "score"], 2], "#ef9f27",
+      [">", ["coalesce", ["get", "score"], 0], 2], "#639922",
+      ["==", ["coalesce", ["get", "score"], 0], 2], "#ef9f27",
       [">=", ["coalesce", ["get", "pocket"], 0], 21], "#ff3b30",
       [">=", ["coalesce", ["get", "pocket"], 0], 6], "#e2724b",
       "#8a4a45",
     ];
 
+    // How loud a dot is, based on how much it strands.
     const weight = [
       "case",
       ["get", "safe"], 0.55,
       [">=", ["coalesce", ["get", "pocket"], 0], 21], 1.9,
       [">=", ["coalesce", ["get", "pocket"], 0], 6], 1.35,
-      ["<=", ["get", "score"], 1], 0.75,
+      ["<=", ["coalesce", ["get", "score"], 0], 1], 0.75,
       1.0,
+    ];
+
+    // Zoom has to be the OUTERMOST thing in MapLibre, so the weight
+    // math goes inside each zoom step rather than wrapping around it.
+    const radius = [
+      "interpolate", ["linear"], ["zoom"],
+      10, ["*", weight, 2.2],
+      12, ["*", weight, 3.6],
+      15, ["*", weight, 7.5],
     ];
 
     map.addLayer({
@@ -181,10 +191,7 @@
       source: "egress",
       paint: {
         "circle-color": color,
-        "circle-radius": [
-          "*", weight,
-          ["interpolate", ["linear"], ["zoom"], 10, 2.2, 12, 3.6, 15, 7.5],
-        ],
+        "circle-radius": radius,
         "circle-opacity": [
           "case",
           ["get", "safe"], 0.35,
