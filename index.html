@@ -87,6 +87,16 @@
   .trap .street { flex: 1; color: var(--ink); }
   #traps .foot { font-size: 11px; color: var(--ink-dim); margin-top: 10px; }
 
+  /* Route readout. Appears only after a click that asks for a way out. */
+  #route-info {
+    bottom: 16px; left: 50%; transform: translateX(-50%);
+    padding: 11px 18px; font-size: 13px; display: none;
+    max-width: min(460px, 92vw); text-align: center;
+    color: var(--teal); pointer-events: none; letter-spacing: 0.02em;
+  }
+  #route-info .ms { color: var(--ink-dim); }
+  #route-info.warn { color: var(--warm); }
+
   .maplibregl-popup-content {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 12px 14px;
@@ -99,6 +109,7 @@
     #traps { display: none; }
     #title { max-width: none; right: 16px; }
     #legend { right: 16px; }
+    #route-info { bottom: auto; top: 16px; }
   }
 </style>
 </head>
@@ -131,6 +142,9 @@
   <div class="tagline">Someone has to map this mess.</div>
 </div>
 
+<!-- Route readout, hidden until a dot is clicked. -->
+<div id="route-info" class="panel"></div>
+
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
   const map = new maplibregl.Map({
@@ -141,6 +155,8 @@
     attributionControl: { compact: true },
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+
+  const EMPTY = { type: "FeatureCollection", features: [] };
 
   map.on("load", async () => {
     let data;
@@ -209,6 +225,46 @@
       },
     });
 
+    // --- Route layers. Added after the points so the route draws on top. ---
+    map.addSource("route-line", { type: "geojson", data: EMPTY });
+    map.addSource("route-ends", { type: "geojson", data: EMPTY });
+
+    map.addLayer({
+      id: "route-glow",
+      type: "line",
+      source: "route-line",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#5dcaa5",
+        "line-blur": 3,
+        "line-opacity": 0.35,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 6, 15, 18],
+      },
+    });
+    map.addLayer({
+      id: "route-main",
+      type: "line",
+      source: "route-line",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#c9f7e6",
+        "line-opacity": 0.95,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.6, 15, 4.5],
+      },
+    });
+    map.addLayer({
+      id: "route-ends",
+      type: "circle",
+      source: "route-ends",
+      paint: {
+        "circle-radius": 6,
+        // start = hollow ring, end = filled teal.
+        "circle-color": ["match", ["get", "kind"], "end", "#5dcaa5", "rgba(13,15,18,0.9)"],
+        "circle-stroke-color": ["match", ["get", "kind"], "end", "#c9f7e6", "#c9f7e6"],
+        "circle-stroke-width": 2,
+      },
+    });
+
     // Legend counts and the trap ranking, both read straight from the data.
     const t = { blaze: 0, warm: 0, dim: 0, amber: 0, green: 0, teal: 0 };
     const traps = new Map();
@@ -258,8 +314,200 @@
       list.appendChild(row);
     }
 
+    // ============================================================
+    //  ROUTING  (step 3)
+    //  Lazy-load the graph on first click, build adjacency once,
+    //  A* from the clicked node to the nearest safety road.
+    // ============================================================
+
+    let G = null;            // the parsed graph file
+    let adj = null;          // adjacency: adj[nodeId] = [{ to, ei }, ...]
+    let graphPromise = null; // guards against double-fetch on fast clicks
+
+    // The cost of driving one road segment. For now it is just length.
+    // Step 4 slots hazards in here and nothing else has to change:
+    //   cost = len * (1 + slope + fuel) + hazard
+    function edgeCost(e) {
+      return e.len;
+    }
+
+    function buildAdj(g) {
+      const N = g.nodes.length;
+      adj = Array.from({ length: N }, () => []);
+      g.edges.forEach((e, i) => {
+        adj[e.u].push({ to: e.v, ei: i });
+      });
+    }
+
+    function loadGraph() {
+      if (G) return Promise.resolve(G);
+      if (graphPromise) return graphPromise;
+      graphPromise = fetch("./graph_santa_rosa.json")
+        .then((r) => {
+          if (!r.ok) throw new Error("graph fetch " + r.status);
+          return r.json();
+        })
+        .then((g) => { G = g; buildAdj(g); return g; });
+      return graphPromise;
+    }
+
+    // A tiny binary min-heap keyed by priority. Enough for 16k edges.
+    class MinHeap {
+      constructor() { this.pri = []; this.val = []; }
+      get size() { return this.pri.length; }
+      push(v, p) {
+        const P = this.pri, V = this.val;
+        let i = P.length; P.push(p); V.push(v);
+        while (i > 0) {
+          const par = (i - 1) >> 1;
+          if (P[par] <= P[i]) break;
+          [P[par], P[i]] = [P[i], P[par]];
+          [V[par], V[i]] = [V[i], V[par]];
+          i = par;
+        }
+      }
+      pop() {
+        const P = this.pri, V = this.val;
+        const top = V[0], last = P.length - 1;
+        P[0] = P[last]; V[0] = V[last]; P.pop(); V.pop();
+        let i = 0; const n = P.length;
+        while (true) {
+          let l = 2 * i + 1, r = 2 * i + 2, s = i;
+          if (l < n && P[l] < P[s]) s = l;
+          if (r < n && P[r] < P[s]) s = r;
+          if (s === i) break;
+          [P[s], P[i]] = [P[i], P[s]];
+          [V[s], V[i]] = [V[i], V[s]];
+          i = s;
+        }
+        return top;
+      }
+    }
+
+    // A* from startId to the nearest node with safe == 1.
+    // h is precomputed straight-line meters to nearest safe node,
+    // so the search is guided from the first step with zero setup.
+    function route(startId) {
+      const N = G.nodes.length;
+      const g = new Float64Array(N).fill(Infinity);
+      const cameNode = new Int32Array(N).fill(-1);
+      const cameEdge = new Int32Array(N).fill(-1);
+      const closed = new Uint8Array(N);
+
+      g[startId] = 0;
+      const heap = new MinHeap();
+      heap.push(startId, G.nodes[startId].h);
+
+      while (heap.size) {
+        const cur = heap.pop();
+        if (closed[cur]) continue;   // stale copy, already finalized
+        closed[cur] = 1;
+
+        if (G.nodes[cur].safe) return build(cur, g[cur], cameNode, cameEdge);
+
+        for (const { to, ei } of adj[cur]) {
+          if (closed[to]) continue;
+          const nc = g[cur] + edgeCost(G.edges[ei]);
+          if (nc < g[to]) {
+            g[to] = nc;
+            cameNode[to] = cur;
+            cameEdge[to] = ei;
+            heap.push(to, nc + G.nodes[to].h);
+          }
+        }
+      }
+      return null; // no path to safety at all
+    }
+
+    // Turn the predecessor trail into a drawable line plus a distance.
+    function build(endId, dist, cameNode, cameEdge) {
+      const nodeSeq = [], edgeSeq = [];
+      let cur = endId;
+      while (cur !== -1) {
+        nodeSeq.push(cur);
+        const ei = cameEdge[cur];
+        if (ei !== -1) edgeSeq.push(ei);
+        cur = cameNode[cur];
+      }
+      nodeSeq.reverse();
+      edgeSeq.reverse();
+
+      const coords = [[G.nodes[nodeSeq[0]].x, G.nodes[nodeSeq[0]].y]];
+      for (let i = 0; i < edgeSeq.length; i++) {
+        const e = G.edges[edgeSeq[i]];
+        if (e.geom) for (const pt of e.geom) coords.push(pt); // curve vertices
+        const b = nodeSeq[i + 1];
+        coords.push([G.nodes[b].x, G.nodes[b].y]);
+      }
+
+      const lastE = edgeSeq.length ? G.edges[edgeSeq[edgeSeq.length - 1]] : null;
+      const street = lastE && lastE.name != null ? G.streets[lastE.name] : null;
+      return { coords, dist, street };
+    }
+
+    function drawRoute(r) {
+      map.getSource("route-line").setData({
+        type: "Feature", properties: {},
+        geometry: { type: "LineString", coordinates: r.coords },
+      });
+      const a = r.coords[0], b = r.coords[r.coords.length - 1];
+      map.getSource("route-ends").setData({
+        type: "FeatureCollection",
+        features: [
+          { type: "Feature", properties: { kind: "start" }, geometry: { type: "Point", coordinates: a } },
+          { type: "Feature", properties: { kind: "end" },   geometry: { type: "Point", coordinates: b } },
+        ],
+      });
+    }
+
+    function clearRoute() {
+      map.getSource("route-line").setData(EMPTY);
+      map.getSource("route-ends").setData(EMPTY);
+    }
+
+    const infoEl = document.getElementById("route-info");
+    function showInfo(html, warn) {
+      infoEl.innerHTML = html;
+      infoEl.classList.toggle("warn", !!warn);
+      infoEl.style.display = "block";
+    }
+    function hideInfo() { infoEl.style.display = "none"; }
+
+    async function doRoute(startId) {
+      showInfo("Finding a way out\u2026");
+      try {
+        await loadGraph();
+      } catch (e) {
+        showInfo("Route data not loaded yet.", true);
+        return;
+      }
+      if (startId == null || startId < 0 || startId >= G.nodes.length) {
+        showInfo("Can't route from this point.", true);
+        return;
+      }
+      if (G.nodes[startId].safe) {
+        clearRoute();
+        showInfo("Already on a safety road.");
+        return;
+      }
+      const t0 = performance.now();
+      const r = route(startId);
+      const ms = Math.round(performance.now() - t0);
+      if (!r) {
+        clearRoute();
+        showInfo("No way out. This spot can't reach a safety road.", true);
+        return;
+      }
+      drawRoute(r);
+      const km = (r.dist / 1000).toFixed(r.dist < 1000 ? 2 : 1);
+      const dest = r.street || "a safety road";
+      showInfo(`${km} km out \u2192 ${dest} <span class="ms">· ${ms} ms</span>`);
+    }
+
+    // --- Click handler: popup as before, plus routing for non-safe dots. ---
     map.on("click", "egress-points", (e) => {
-      const p = e.features[0].properties;
+      const f = e.features[0];
+      const p = f.properties;
       let html;
       if (p.safe) {
         html = "<b>Safety road</b><br>Already a way out.";
@@ -279,7 +527,17 @@
       }
       new maplibregl.Popup({ closeButton: false, maxWidth: "230px" })
         .setLngLat(e.lngLat).setHTML(html).addTo(map);
+
+      // Route out from here. Safe dots short-circuit inside doRoute.
+      doRoute(p.id);
     });
+
+    // Clicking empty map clears the route.
+    map.on("click", (e) => {
+      const hit = map.queryRenderedFeatures(e.point, { layers: ["egress-points"] });
+      if (!hit.length) { clearRoute(); hideInfo(); }
+    });
+
     map.on("mouseenter", "egress-points", () => (map.getCanvas().style.cursor = "pointer"));
     map.on("mouseleave", "egress-points", () => (map.getCanvas().style.cursor = ""));
   });
