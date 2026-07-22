@@ -132,11 +132,50 @@
   .maplibregl-popup-tip { border-top-color: var(--line) !important; }
   .maplibregl-ctrl-attrib { font-family: "DM Mono", monospace; font-size: 10px; }
 
+  /* Phones. Desktop above is untouched; everything here is mobile-only.
+     The goal is simple: give the map back the middle of the screen. */
   @media (max-width: 820px) {
     #traps { display: none; }
-    #title { max-width: none; right: 16px; }
-    #legend { right: 16px; }
-    #route-info { bottom: auto; top: 16px; }
+
+    /* Title keeps the brand, the disclaimer, and the block tool.
+       The long explainer paragraph is desktop-only, it just eats
+       vertical space on a phone. */
+    #title {
+      left: 12px; right: 12px; top: 12px;
+      max-width: none; padding: 13px 15px;
+    }
+    #title h1 { font-size: 24px; }
+    #title .place { margin: 6px 0 0; }
+    #title p { display: none; }
+    #title .note { margin-top: 10px; padding-top: 10px; }
+    #title .tools { margin-top: 10px; padding-top: 10px; }
+    #title .tool-hint { display: none; }
+
+    /* Legend collapses to a compact one-row color key pinned to the
+       bottom edge. If it runs long it scrolls sideways, so its height
+       stays predictable and the map above it stays big. */
+    #legend {
+      left: 12px; right: 12px; bottom: 12px;
+      min-width: 0; padding: 8px 12px;
+      display: flex; flex-wrap: nowrap; align-items: center;
+      gap: 14px; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    }
+    #legend .head, #legend .sub, #legend .tagline { display: none; }
+    #legend .row {
+      flex: 0 0 auto; padding: 0; gap: 6px;
+      font-size: 11px; white-space: nowrap;
+    }
+    #legend .row .label { flex: none; }
+    #legend .row .count { display: none; }
+
+    /* Route readout sits just above the legend strip, centered, so it
+       reads as "here's your way out" the same as it does on desktop,
+       instead of colliding with the title up top. */
+    #route-info {
+      top: auto; bottom: 64px;
+      left: 12px; right: 12px; transform: none;
+      max-width: none;
+    }
   }
 </style>
 </head>
