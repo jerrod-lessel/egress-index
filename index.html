@@ -51,6 +51,33 @@
     margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
   }
 
+  /* Hazard tools. Reuse the panel's own type + tokens, no new look. */
+  .tools {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
+  }
+  .tool-btn {
+    font-family: "DM Mono", monospace; font-size: 12px;
+    color: var(--ink); background: #1e232a;
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 7px 11px; cursor: pointer;
+  }
+  .tool-btn:hover { border-color: var(--ink-dim); }
+  .tool-btn.active {
+    background: var(--warm); border-color: var(--warm); color: #14100e;
+  }
+  .tool-btn.ghost { color: var(--ink-dim); }
+  .tool-hint {
+    font-size: 11px; line-height: 1.5; color: var(--ink-dim); margin-top: 8px;
+  }
+
+  /* The 🚧 itself. A clickable DOM marker, so removal is one tap. */
+  .hazard-marker {
+    font-size: 22px; line-height: 1; cursor: pointer;
+    user-select: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
+  }
+  .hazard-marker:hover { transform: scale(1.15); }
+
   #legend { bottom: 16px; left: 16px; padding: 14px 18px; min-width: 250px; }
   .head {
     font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
@@ -122,6 +149,11 @@
   <div class="place">Santa Rosa, California</div>
   <p>Some neighborhoods look like they have options. Close one street and dozens of blocks have nowhere to go. This map finds them.</p>
   <div class="note">Planning tool, not live navigation. Built from road shapes, not any current fire.</div>
+  <div class="tools">
+    <button id="block-btn" class="tool-btn">🚧 Block a road</button>
+    <button id="clear-btn" class="tool-btn ghost" style="display:none">Clear blocks</button>
+  </div>
+  <div class="tool-hint" id="tool-hint">Close a road, watch the way out rethink itself.</div>
 </div>
 
 <div id="traps" class="panel">
@@ -323,12 +355,14 @@
     let G = null;            // the parsed graph file
     let adj = null;          // adjacency: adj[nodeId] = [{ to, ei }, ...]
     let graphPromise = null; // guards against double-fetch on fast clicks
+    let lastOrigin = null;   // last routed-from node, so blocks can re-route live
 
-    // The cost of driving one road segment. For now it is just length.
-    // Step 4 slots hazards in here and nothing else has to change:
-    //   cost = len * (1 + slope + fuel) + hazard
+    // The cost of driving one road segment. Length plus any hazard
+    // penalty stamped on the edge (0 when clear). Step 4a wires the
+    // hazard term in; the signature never changed.
+    //   later: len * (1 + slope + fuel) + hazard
     function edgeCost(e) {
-      return e.len;
+      return e.len + (e.hz || 0);
     }
 
     function buildAdj(g) {
@@ -403,7 +437,7 @@
         if (closed[cur]) continue;   // stale copy, already finalized
         closed[cur] = 1;
 
-        if (G.nodes[cur].safe) return build(cur, g[cur], cameNode, cameEdge);
+        if (G.nodes[cur].safe) return build(cur, cameNode, cameEdge);
 
         for (const { to, ei } of adj[cur]) {
           if (closed[to]) continue;
@@ -419,8 +453,11 @@
       return null; // no path to safety at all
     }
 
-    // Turn the predecessor trail into a drawable line plus a distance.
-    function build(endId, dist, cameNode, cameEdge) {
+    // Turn the predecessor trail into a drawable line. Distance is
+    // summed from real edge lengths, NOT the search cost, so a route
+    // that had to cross a penalized edge still reports honest meters.
+    // blocked flags whether any edge on it carries a hazard penalty.
+    function build(endId, cameNode, cameEdge) {
       const nodeSeq = [], edgeSeq = [];
       let cur = endId;
       while (cur !== -1) {
@@ -433,8 +470,11 @@
       edgeSeq.reverse();
 
       const coords = [[G.nodes[nodeSeq[0]].x, G.nodes[nodeSeq[0]].y]];
+      let dist = 0, blocked = false;
       for (let i = 0; i < edgeSeq.length; i++) {
         const e = G.edges[edgeSeq[i]];
+        dist += e.len;               // real length only
+        if (e.hz) blocked = true;    // route was forced across a block
         if (e.geom) for (const pt of e.geom) coords.push(pt); // curve vertices
         const b = nodeSeq[i + 1];
         coords.push([G.nodes[b].x, G.nodes[b].y]);
@@ -442,7 +482,7 @@
 
       const lastE = edgeSeq.length ? G.edges[edgeSeq[edgeSeq.length - 1]] : null;
       const street = lastE && lastE.name != null ? G.streets[lastE.name] : null;
-      return { coords, dist, street };
+      return { coords, dist, street, blocked };
     }
 
     function drawRoute(r) {
@@ -490,6 +530,7 @@
         showInfo("Already on a safety road.");
         return;
       }
+      lastOrigin = startId; // remember, so placed blocks can re-route live
       const t0 = performance.now();
       const r = route(startId);
       const ms = Math.round(performance.now() - t0);
@@ -501,11 +542,184 @@
       drawRoute(r);
       const km = (r.dist / 1000).toFixed(r.dist < 1000 ? 2 : 1);
       const dest = r.street || "a safety road";
-      showInfo(`${km} km out \u2192 ${dest} <span class="ms">· ${ms} ms</span>`);
+      if (r.blocked) {
+        showInfo(`${km} km out \u2192 ${dest}. Heads up: this route crosses a blocked road. <span class="ms">\u00b7 ${ms} ms</span>`, true);
+      } else {
+        showInfo(`${km} km out \u2192 ${dest} <span class="ms">\u00b7 ${ms} ms</span>`);
+      }
     }
 
-    // --- Click handler: popup as before, plus routing for non-safe dots. ---
+    // ============================================================
+    //  HAZARDS  (step 4a: obstruction only)
+    //  Drop a point, snap it to the nearest edge within 100 m,
+    //  block that edge AND its reverse pair. A blocked edge costs a
+    //  huge but finite penalty, so the router dodges it when it can
+    //  and crosses it (flagged) only when there is no other way.
+    //  edgeCost already reads e.hz, so nothing downstream changed.
+    //
+    //  Two layers on purpose:
+    //    hazards[]  -> source of truth, one object per placed point.
+    //    e.hz       -> derived index, rebuilt whenever hazards[] moves.
+    //  Flood and fire reuse the SAME object later; they just fill
+    //  `edges` with more indices at drop time. Everything downstream
+    //  reads `edges` and never asks which type produced it.
+    // ============================================================
+
+    const OBSTRUCTION_PENALTY = 10000000; // ~10,000 km of fake distance
+    const SNAP_CAP_M = 100;               // reject drops farther than this
+
+    let hazards = [];        // source of truth
+    let hazardSeq = 0;       // simple id counter
+    let hazardMarkers = [];  // live 🚧 marker instances, redrawn on change
+    let placing = false;     // "click a road to block it" mode on/off
+
+    const blockBtn = document.getElementById("block-btn");
+    const clearBtn = document.getElementById("clear-btn");
+    const hintEl   = document.getElementById("tool-hint");
+
+    // Snap a raw click to the closest point on the closest edge.
+    // Distances are meters via a local flat projection (scale
+    // longitude by cos(lat)), accurate across a city, no library.
+    // Returns the edge index, the snapped lng/lat for the marker,
+    // and the click's distance from that road so the cap can reject
+    // wild drops. Walks the full edge shape (node, geom vertices,
+    // node), so it respects the same curves the routes trace.
+    function snapToEdge(lng, lat) {
+      const kx = 111320 * Math.cos(lat * Math.PI / 180);
+      const ky = 111320;
+      const px = lng * kx, py = lat * ky;
+
+      let best = { d: Infinity, ei: -1, lng: 0, lat: 0 };
+
+      for (let ei = 0; ei < G.edges.length; ei++) {
+        const e = G.edges[ei];
+        const pts = [[G.nodes[e.u].x, G.nodes[e.u].y]];
+        if (e.geom) for (const gp of e.geom) pts.push(gp);
+        pts.push([G.nodes[e.v].x, G.nodes[e.v].y]);
+
+        for (let i = 0; i < pts.length - 1; i++) {
+          const aLng = pts[i][0],     aLat = pts[i][1];
+          const bLng = pts[i + 1][0], bLat = pts[i + 1][1];
+          const ax = aLng * kx, ay = aLat * ky;
+          const bx = bLng * kx, by = bLat * ky;
+          const dx = bx - ax, dy = by - ay;
+          const L2 = dx * dx + dy * dy;
+          let tt = L2 ? ((px - ax) * dx + (py - ay) * dy) / L2 : 0;
+          tt = tt < 0 ? 0 : tt > 1 ? 1 : tt;
+          const cx = ax + tt * dx, cy = ay + tt * dy;
+          const d = Math.hypot(px - cx, py - cy);
+          if (d < best.d) {
+            best = {
+              d, ei,
+              lng: aLng + tt * (bLng - aLng),
+              lat: aLat + tt * (bLat - aLat),
+            };
+          }
+        }
+      }
+      return best;
+    }
+
+    // Rebuild the derived index: wipe every hz, then stamp the
+    // penalty on each blocked edge. Wiping first means a removed
+    // hazard leaves no ghost. Larger penalty wins on overlap
+    // (moot with one tier, but it is the rule once tiers mix).
+    function rebuildHazards() {
+      if (G) {
+        for (const e of G.edges) e.hz = 0;
+        for (const h of hazards) {
+          for (const ei of h.edges) {
+            if (OBSTRUCTION_PENALTY > (G.edges[ei].hz || 0)) {
+              G.edges[ei].hz = OBSTRUCTION_PENALTY;
+            }
+          }
+        }
+      }
+      drawHazards();
+      clearBtn.style.display = hazards.length ? "" : "none";
+    }
+
+    // Repaint the 🚧 markers from the hazard array. Each is
+    // clickable to remove that one block.
+    function drawHazards() {
+      for (const m of hazardMarkers) m.remove();
+      hazardMarkers = [];
+      for (const h of hazards) {
+        const el = document.createElement("div");
+        el.className = "hazard-marker";
+        el.textContent = "\uD83D\uDEA7"; // 🚧
+        el.title = "Click to remove this block";
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();       // don't let it fall through to a map click
+          removeHazard(h.id);
+        });
+        const m = new maplibregl.Marker({ element: el, anchor: "center" })
+          .setLngLat([h.lng, h.lat])
+          .addTo(map);
+        hazardMarkers.push(m);
+      }
+    }
+
+    // Drop an obstruction at a click. Ensures the graph is loaded
+    // (snapping needs it), snaps, rejects if no road is within the
+    // cap, then blocks the snapped edge and its reverse pair.
+    async function addObstruction(lng, lat) {
+      try {
+        await loadGraph();
+      } catch (e) {
+        showInfo("Road data not loaded yet.", true);
+        return;
+      }
+      const snap = snapToEdge(lng, lat);
+      if (snap.ei < 0 || snap.d > SNAP_CAP_M) {
+        showInfo("No road within 100 m of there. Aim for a street.", true);
+        return;
+      }
+      const e = G.edges[snap.ei];
+      const edges = [snap.ei];
+      if (e.pair != null) edges.push(e.pair); // block both directions
+      hazards.push({
+        id: hazardSeq++,
+        type: "obstruction",
+        lng: snap.lng, lat: snap.lat,
+        edges,
+      });
+      rebuildHazards();
+      reroute();
+    }
+
+    function removeHazard(id) {
+      hazards = hazards.filter((h) => h.id !== id);
+      rebuildHazards();
+      reroute();
+    }
+
+    // Re-run the last route so a placed or removed block shows its
+    // effect live. Does nothing if no route is currently active.
+    function reroute() {
+      if (lastOrigin != null) doRoute(lastOrigin);
+    }
+
+    function setPlacing(on) {
+      placing = on;
+      blockBtn.classList.toggle("active", on);
+      blockBtn.textContent = on ? "\uD83D\uDEA7 Placing\u2026 (click to stop)" : "\uD83D\uDEA7 Block a road";
+      hintEl.textContent = on
+        ? "Click any road to drop a block. Click a \uD83D\uDEA7 to remove it."
+        : "Close a road, watch the way out rethink itself.";
+      map.getCanvas().style.cursor = on ? "crosshair" : "";
+    }
+
+    blockBtn.addEventListener("click", () => setPlacing(!placing));
+    clearBtn.addEventListener("click", () => {
+      hazards = [];
+      rebuildHazards();
+      reroute();
+    });
+
+    // --- Click handler: popup + routing for dots, unless we're placing. ---
     map.on("click", "egress-points", (e) => {
+      if (placing) return; // in placing mode, the general handler drops a block
       const f = e.features[0];
       const p = f.properties;
       let html;
@@ -532,14 +746,18 @@
       doRoute(p.id);
     });
 
-    // Clicking empty map clears the route.
+    // General map click. In placing mode every click drops a block.
+    // Otherwise, an empty-space click clears the route and forgets
+    // the origin, so placing blocks won't resurrect a dismissed route.
     map.on("click", (e) => {
+      if (placing) { addObstruction(e.lngLat.lng, e.lngLat.lat); return; }
       const hit = map.queryRenderedFeatures(e.point, { layers: ["egress-points"] });
-      if (!hit.length) { clearRoute(); hideInfo(); }
+      if (!hit.length) { lastOrigin = null; clearRoute(); hideInfo(); }
     });
 
-    map.on("mouseenter", "egress-points", () => (map.getCanvas().style.cursor = "pointer"));
-    map.on("mouseleave", "egress-points", () => (map.getCanvas().style.cursor = ""));
+    // Cursor hints, held back while placing so the crosshair stays.
+    map.on("mouseenter", "egress-points", () => { if (!placing) map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "egress-points", () => { if (!placing) map.getCanvas().style.cursor = ""; });
   });
 </script>
 </body>
