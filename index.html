@@ -152,7 +152,14 @@
     #title .note { margin-top: 10px; padding-top: 10px; }
     #title .tools { margin-top: 10px; padding-top: 10px; }
     #title .tool-hint { display: none; }
-
+    .brand { display: flex; align-items: center; gap: 12px; }
+      .brand-mark {
+        width: 44px; height: 44px; flex: none;
+        border-radius: 9px; display: block;
+      }
+      .brand-text { min-width: 0; }
+      .brand-text h1 { margin: 0; }
+      .brand-text .place { margin: 4px 0 0; }
     /* Legend collapses to a compact one-row color key pinned to the
        bottom edge. If it runs long it scrolls sideways, so its height
        stays predictable and the map above it stays big. */
@@ -186,8 +193,13 @@
 <div id="map"></div>
 
 <div id="title" class="panel">
-  <h1>Egress Index</h1>
-  <div class="place">Santa Rosa, California</div>
+  <div class="brand">
+    <img src="./favicon.svg" alt="Egress Index logo" class="brand-mark" />
+    <div class="brand-text">
+      <h1>Egress Index</h1>
+      <div class="place">Santa Rosa, California</div>
+    </div>
+  </div>
   <p>Some neighborhoods look like they have options. Close one street and dozens of blocks have nowhere to go. This map finds them.</p>
   <div class="note">Planning tool, not live navigation. Built from road shapes, not any current fire.</div>
   <div class="tools">
