@@ -53,6 +53,18 @@
     margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
   }
 
+  /* Brand row: logo on the left, wordmark + place stacked to its right.
+     Lives in the MAIN stylesheet so it sizes on every screen, not just
+     mobile. .brand-text .place drops the bottom margin the standalone
+     .place had, since the row itself now spaces the paragraph below. */
+  #title .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  #title .brand-mark {
+    width: 42px; height: 42px; flex: none;
+    border-radius: 9px; display: block;
+  }
+  #title .brand-text { min-width: 0; }
+  #title .brand-text .place { margin: 6px 0 0; }
+
   /* Hazard tools. Reuse the panel's own type + tokens, no new look. */
   .tools {
     display: flex; gap: 8px; flex-wrap: wrap;
@@ -147,19 +159,16 @@
       max-width: none; padding: 13px 15px;
     }
     #title h1 { font-size: 24px; }
-    #title .place { margin: 6px 0 0; }
     #title p { display: none; }
     #title .note { margin-top: 10px; padding-top: 10px; }
     #title .tools { margin-top: 10px; padding-top: 10px; }
     #title .tool-hint { display: none; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-      .brand-mark {
-        width: 44px; height: 44px; flex: none;
-        border-radius: 9px; display: block;
-      }
-      .brand-text { min-width: 0; }
-      .brand-text h1 { margin: 0; }
-      .brand-text .place { margin: 4px 0 0; }
+
+    /* Just a smaller logo on phones. The sizing that makes the mark
+       work at all now lives up in the main stylesheet. */
+    #title .brand { margin-bottom: 10px; }
+    #title .brand-mark { width: 34px; height: 34px; }
+
     /* Legend collapses to a compact one-row color key pinned to the
        bottom edge. If it runs long it scrolls sideways, so its height
        stays predictable and the map above it stays big. */
