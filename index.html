@@ -703,7 +703,7 @@
     const CITY_LAT = 38.45;
     const KX = 111320 * Math.cos(CITY_LAT * Math.PI / 180), KY = 111320;
     const BACKING = 0.15;      // upwind reach, as a fraction of downwind reach
-    const SEED_RADIUS = 100;   // minimum radius the fire covers in every direction
+    const SEED_RADIUS = 100;   // how far the fire reaches straight upwind
     const FIRE_CAP_M = 1500;   // past this, there is nothing out here to burn
     const SAMPLE_M = 30;       // how finely road shapes are tested against the area
     let SPREAD = 500;          // meters of downwind reach, from the slider
@@ -776,13 +776,25 @@
       return best;
     }
 
-    // How far the fire reaches at a given angle off the wind, expressed
-    // as a fraction of the downwind reach. 1 straight downwind, BACKING
-    // straight upwind, smooth in between. cosT is the cosine of the
-    // angle between "which way is this" and "which way is the wind".
-    function reachFactor(cosT) {
+    // How far the fire reaches at a given angle off the wind, in meters.
+    //
+    // This is ONE continuous curve, deliberately. An earlier version took
+    // max(seed circle, teardrop), and wherever those two curves crossed
+    // the outline kinked and read as a disc glued to a cone. Blending
+    // from the back radius to the front radius instead gives a single
+    // smooth egg: narrow behind, swelling to full reach downwind.
+    //
+    // cosT is the cosine of the angle between "which way is this" and
+    // "which way is the wind": 1 straight downwind, -1 straight upwind.
+    function backRadius() {
+      // Upwind extent: the seed radius, or 15% of reach, whichever is
+      // larger, but never more than the reach itself.
+      return Math.min(SPREAD, Math.max(SEED_RADIUS, SPREAD * BACKING));
+    }
+    function reachAt(cosT) {
       const s = (1 + cosT) / 2;          // 1 downwind, 0 upwind
-      return BACKING + (1 - BACKING) * s * s * s;
+      const back = backRadius();
+      return back + (SPREAD - back) * s * s * s;
     }
 
     // Is this metric point inside the burn footprint?
@@ -790,10 +802,10 @@
       return function (x, y) {
         const dx = x - ix, dy = y - iy;
         const d = Math.hypot(dx, dy);
-        if (d <= SEED_RADIUS) return true;   // the fire itself, all directions
+        if (d <= backRadius()) return true;  // inside even straight upwind
         if (d > SPREAD) return false;        // beyond the furthest possible
         const cosT = (dx * windVec.x + dy * windVec.y) / (d || 1);
-        return d <= SPREAD * reachFactor(cosT);
+        return d <= reachAt(cosT);
       };
     }
 
@@ -805,7 +817,7 @@
       const ring = [];
       for (let a = 0; a <= 360; a += 4) {
         const th = (a * Math.PI) / 180;
-        const r = Math.max(SEED_RADIUS, SPREAD * reachFactor(Math.cos(th)));
+        const r = reachAt(Math.cos(th));
         const b = windBearing + th;
         ring.push([(cx + r * Math.sin(b)) / KX, (cy + r * Math.cos(b)) / KY]);
       }
