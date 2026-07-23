@@ -307,33 +307,20 @@
       return;
     }
 
-    // --- Fire wedge + hull go UNDER everything: they are context, not data.
-    map.addSource("fire-wedge", { type: "geojson", data: EMPTY });
+    // --- The burn footprint goes UNDER everything. It is the ground the
+    //     fire covers; the roads inside it are what the router avoids. ---
+    map.addSource("fire-region", { type: "geojson", data: EMPTY });
     map.addLayer({
-      id: "fire-wedge-fill",
+      id: "fire-region-fill",
       type: "fill",
-      source: "fire-wedge",
-      paint: { "fill-color": "#ff5a2e", "fill-opacity": 0.07 },
+      source: "fire-region",
+      paint: { "fill-color": "#ff5a2e", "fill-opacity": 0.14 },
     });
     map.addLayer({
-      id: "fire-wedge-line",
+      id: "fire-region-line",
       type: "line",
-      source: "fire-wedge",
-      paint: { "line-color": "#ff9a52", "line-opacity": 0.25, "line-width": 1, "line-dasharray": [3, 3] },
-    });
-
-    map.addSource("fire-hull", { type: "geojson", data: EMPTY });
-    map.addLayer({
-      id: "fire-hull-fill",
-      type: "fill",
-      source: "fire-hull",
-      paint: { "fill-color": "#ff5a2e", "fill-opacity": 0.16 },
-    });
-    map.addLayer({
-      id: "fire-hull-line",
-      type: "line",
-      source: "fire-hull",
-      paint: { "line-color": "#ff7a3c", "line-opacity": 0.55, "line-width": 1.4 },
+      source: "fire-region",
+      paint: { "line-color": "#ff7a3c", "line-opacity": 0.5, "line-width": 1.4 },
     });
 
     map.addSource("egress", { type: "geojson", data });
@@ -410,7 +397,7 @@
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": "#ff9a52",
-        "line-opacity": 0.6,
+        "line-opacity": 0.65,
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 6],
       },
     });
@@ -507,8 +494,7 @@
     // ============================================================
 
     let G = null;
-    let adj = null;          // routing adjacency (respects one-ways)
-    let fireAdj = null;      // fire adjacency (both ways; flames ignore one-ways)
+    let adj = null;
     let graphPromise = null;
     let lastOrigin = null;
 
@@ -519,11 +505,8 @@
     function buildAdj(g) {
       const N = g.nodes.length;
       adj = Array.from({ length: N }, () => []);
-      fireAdj = Array.from({ length: N }, () => []);
       g.edges.forEach((e, i) => {
         adj[e.u].push({ to: e.v, ei: i });
-        fireAdj[e.u].push({ to: e.v, ei: i, len: e.len });
-        fireAdj[e.v].push({ to: e.u, ei: i, len: e.len });
       });
     }
 
@@ -701,10 +684,16 @@
     //  hazards[] -> source of truth, one object per placed point.
     //  e.hz      -> derived index, rebuilt whenever hazards[] moves.
     //
-    //  Every hazard just fills an `edges` list. Obstruction fills it
-    //  with one road + pair. Fire fills it with a downwind plume, and
-    //  also carries a wedge (where wind could push it) and a hull
-    //  (what it actually reached) for drawing.
+    //  Every hazard just fills an `edges` list, so the router never
+    //  asks which type produced it.
+    //
+    //  FIRE MODEL: fire burns ground, not pavement. So a fire is an
+    //  AREA, not a walk along streets. The footprint is a teardrop
+    //  centred on the ignition: full reach downwind, tapering to a
+    //  stub upwind (backing fires are real but slow). Any road that
+    //  passes through that footprint is closed. That is why raising
+    //  reach now catches roads that were outside a moment ago, and
+    //  why fire does not care whether streets connect.
     // ============================================================
 
     const OBSTRUCTION_PENALTY = 10000000; // ~10,000 km of fake distance
@@ -713,11 +702,11 @@
     // Fire model.
     const CITY_LAT = 38.45;
     const KX = 111320 * Math.cos(CITY_LAT * Math.PI / 180), KY = 111320;
-    const CONE_DEG = 60;                            // half-angle of the wedge
-    const CONE_COS = Math.cos(CONE_DEG * Math.PI / 180);
-    const SEED_RADIUS = 200;   // how far a fire reaches to catch its first roads
+    const BACKING = 0.15;      // upwind reach, as a fraction of downwind reach
+    const SEED_RADIUS = 200;   // minimum radius the fire covers in every direction
     const FIRE_CAP_M = 1500;   // past this, there is nothing out here to burn
-    let SPREAD = 500;          // meters of reach, from the slider
+    const SAMPLE_M = 30;       // how finely road shapes are tested against the area
+    let SPREAD = 500;          // meters of downwind reach, from the slider
     let windBearing = 225 * Math.PI / 180;  // clockwise from north; Diablo NE->SW
     let windVec = { x: Math.sin(windBearing), y: Math.cos(windBearing) };
 
@@ -736,8 +725,7 @@
     const spreadRange = document.getElementById("spread-range");
     const spreadVal   = document.getElementById("spread-val");
 
-    // Distance from a click to one edge, walking its full shape.
-    // Returns meters and the closest point on that edge.
+    // Distance from a point to one edge, walking its full shape.
     function edgeDistance(ei, px, py, kx, ky) {
       const e = G.edges[ei];
       const pts = [[G.nodes[e.u].x, G.nodes[e.u].y]];
@@ -777,127 +765,107 @@
       return best;
     }
 
-    // Every edge within radius of a click, plus the nearest one overall.
-    function edgesNear(lng, lat, radius) {
+    function nearestRoadMeters(lng, lat) {
       const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
       const px = lng * kx, py = lat * ky;
-      const hits = [];
-      let nearest = Infinity;
+      let best = Infinity;
       for (let ei = 0; ei < G.edges.length; ei++) {
         const r = edgeDistance(ei, px, py, kx, ky);
-        if (r.d < nearest) nearest = r.d;
-        if (r.d <= radius) hits.push(ei);
+        if (r.d < best) best = r.d;
       }
-      return { hits, nearest };
+      return best;
     }
 
-    // Convex hull (monotone chain) over metric points, returned as lng/lat.
-    function hullOf(metricPts) {
-      if (metricPts.length < 3) return null;
-      const p = metricPts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-      const cross = (o, a, b) =>
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-      const lower = [];
-      for (const pt of p) {
-        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pt) <= 0) lower.pop();
-        lower.push(pt);
-      }
-      const upper = [];
-      for (let i = p.length - 1; i >= 0; i--) {
-        const pt = p[i];
-        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pt) <= 0) upper.pop();
-        upper.push(pt);
-      }
-      lower.pop(); upper.pop();
-      const ring = lower.concat(upper);
-      if (ring.length < 3) return null;
-      const ll = ring.map(([x, y]) => [x / KX, y / KY]);
-      ll.push(ll[0]);
-      return ll;
+    // How far the fire reaches at a given angle off the wind, expressed
+    // as a fraction of the downwind reach. 1 straight downwind, BACKING
+    // straight upwind, smooth in between. cosT is the cosine of the
+    // angle between "which way is this" and "which way is the wind".
+    function reachFactor(cosT) {
+      const s = (1 + cosT) / 2;          // 1 downwind, 0 upwind
+      return BACKING + (1 - BACKING) * s * s * s;
     }
 
-    // The wind wedge: where the wind COULD carry this fire. A pie slice
-    // from the ignition, SPREAD long, CONE_DEG to each side.
-    function wedgeOf(lng, lat) {
+    // Is this metric point inside the burn footprint?
+    function makeInside(ix, iy) {
+      return function (x, y) {
+        const dx = x - ix, dy = y - iy;
+        const d = Math.hypot(dx, dy);
+        if (d <= SEED_RADIUS) return true;   // the fire itself, all directions
+        if (d > SPREAD) return false;        // beyond the furthest possible
+        const cosT = (dx * windVec.x + dy * windVec.y) / (d || 1);
+        return d <= SPREAD * reachFactor(cosT);
+      };
+    }
+
+    // The footprint as a drawable ring. This is the exact boundary the
+    // road test uses, so the outline never claims ground that did not
+    // burn and never hides ground that did.
+    function regionOf(lng, lat) {
       const cx = lng * KX, cy = lat * KY;
-      const ring = [[lng, lat]];
-      for (let a = -CONE_DEG; a <= CONE_DEG; a += 5) {
-        const b = windBearing + (a * Math.PI) / 180;
-        const x = cx + SPREAD * Math.sin(b);
-        const y = cy + SPREAD * Math.cos(b);
-        ring.push([x / KX, y / KY]);
+      const ring = [];
+      for (let a = 0; a <= 360; a += 4) {
+        const th = (a * Math.PI) / 180;
+        const r = Math.max(SEED_RADIUS, SPREAD * reachFactor(Math.cos(th)));
+        const b = windBearing + th;
+        ring.push([(cx + r * Math.sin(b)) / KX, (cy + r * Math.cos(b)) / KY]);
       }
-      ring.push([lng, lat]);
+      ring.push(ring[0]);
       return ring;
     }
 
-    // Grow a plume from an ignition point. Catches every road within
-    // SEED_RADIUS, then creeps outward only downwind and only while
-    // still within SPREAD of the ignition. Returns the burned edges,
-    // the leading-edge coordinates, and the hull of what burned.
+    // Burn everything the footprint touches. Road shapes are sampled
+    // every SAMPLE_M so a long straight road crossing the area still
+    // registers even when both of its endpoints sit outside.
     function computePlume(lng, lat) {
-      const { hits } = edgesNear(lng, lat, SEED_RADIUS);
-      const blocked = new Set();
-      const addE = (ei) => {
-        blocked.add(ei);
-        const e = G.edges[ei];
-        if (e.pair != null) blocked.add(e.pair);
-      };
-
       const ix = lng * KX, iy = lat * KY;
-      const nx = (id) => G.nodes[id].x * KX;
-      const ny = (id) => G.nodes[id].y * KY;
+      const inside = makeInside(ix, iy);
+      const blocked = new Set();
 
-      const dist = new Map();
-      const heap = new MinHeap();
-      for (const ei of hits) {
-        addE(ei); // seeded roads burn regardless of direction
-        for (const nd of [G.edges[ei].u, G.edges[ei].v]) {
-          const d = Math.hypot(nx(nd) - ix, ny(nd) - iy);
-          if (!dist.has(nd) || d < dist.get(nd)) { dist.set(nd, d); heap.push(nd, d); }
-        }
-      }
+      for (let ei = 0; ei < G.edges.length; ei++) {
+        if (blocked.has(ei)) continue;
+        const e = G.edges[ei];
+        const pts = [[G.nodes[e.u].x, G.nodes[e.u].y]];
+        if (e.geom) for (const gp of e.geom) pts.push(gp);
+        pts.push([G.nodes[e.v].x, G.nodes[e.v].y]);
 
-      const extended = new Set();
-      while (heap.size) {
-        const node = heap.pop();
-        const d0 = dist.get(node);
-        const ax = nx(node), ay = ny(node);
-        for (const nb of fireAdj[node]) {
-          const nd = d0 + nb.len;
-          if (nd > SPREAD) continue;                  // out of reach
-          const dx = nx(nb.to) - ax, dy = ny(nb.to) - ay;
-          const L = Math.hypot(dx, dy) || 1;
-          if ((dx / L) * windVec.x + (dy / L) * windVec.y < CONE_COS) continue; // upwind
-          addE(nb.ei);
-          extended.add(node);
-          if (!dist.has(nb.to) || nd < dist.get(nb.to)) {
-            dist.set(nb.to, nd);
-            heap.push(nb.to, nd);
+        let hit = false;
+        for (let i = 0; i < pts.length - 1 && !hit; i++) {
+          const ax = pts[i][0] * KX, ay = pts[i][1] * KY;
+          const bx = pts[i + 1][0] * KX, by = pts[i + 1][1] * KY;
+          const segLen = Math.hypot(bx - ax, by - ay);
+          const steps = Math.max(1, Math.ceil(segLen / SAMPLE_M));
+          for (let s = 0; s <= steps; s++) {
+            const tt = s / steps;
+            if (inside(ax + (bx - ax) * tt, ay + (by - ay) * tt)) { hit = true; break; }
           }
         }
+        if (hit) {
+          blocked.add(ei);
+          if (e.pair != null) blocked.add(e.pair);
+        }
       }
 
-      // Leading edge: reached nodes that did not push the fire further.
-      let tips = [...dist.keys()].filter((n) => !extended.has(n));
-      tips.sort((a, b) => dist.get(b) - dist.get(a));
-      tips = tips.slice(0, 5).map((n) => [G.nodes[n].x, G.nodes[n].y]);
-
-      // Hull over every vertex of every burned road, plus the ignition.
-      const mpts = [[ix, iy]];
+      // Leading edge: burned roads furthest downwind, spaced out so the
+      // flames sit along the fire front instead of piling on one corner.
+      const cand = [];
       for (const ei of blocked) {
         const e = G.edges[ei];
-        mpts.push([nx(e.u), ny(e.u)], [nx(e.v), ny(e.v)]);
-        if (e.geom) for (const [gl, ga] of e.geom) mpts.push([gl * KX, ga * KY]);
+        const mx = (G.nodes[e.u].x + G.nodes[e.v].x) / 2;
+        const my = (G.nodes[e.u].y + G.nodes[e.v].y) / 2;
+        const proj = (mx * KX - ix) * windVec.x + (my * KY - iy) * windVec.y;
+        cand.push({ lng: mx, lat: my, proj });
+      }
+      cand.sort((a, b) => b.proj - a.proj);
+      const tips = [];
+      for (const c of cand) {
+        if (tips.length >= 5) break;
+        const far = tips.every(
+          (t) => Math.hypot((c.lng - t[0]) * KX, (c.lat - t[1]) * KY) > 120
+        );
+        if (far) tips.push([c.lng, c.lat]);
       }
 
-      return {
-        edges: [...blocked],
-        tips,
-        hull: hullOf(mpts),
-        wedge: wedgeOf(lng, lat),
-        burned: blocked.size,
-      };
+      return { edges: [...blocked], tips, region: regionOf(lng, lat), burned: blocked.size };
     }
 
     // Rebuild the derived index, then repaint everything fire draws.
@@ -913,7 +881,7 @@
         }
       }
       drawPlume();
-      drawShapes();
+      drawRegions();
       drawHazards();
       clearBtn.style.display = hazards.length ? "" : "none";
     }
@@ -940,17 +908,15 @@
       if (src) src.setData({ type: "FeatureCollection", features: feats });
     }
 
-    // Paint the wind wedge and the burned-area hull for every fire.
-    function drawShapes() {
-      const wedges = [], hulls = [];
+    // Paint each fire's burn footprint.
+    function drawRegions() {
+      const feats = [];
       for (const h of hazards) {
-        if (h.type !== "fire") continue;
-        if (h.wedge) wedges.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [h.wedge] } });
-        if (h.hull)  hulls.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [h.hull] } });
+        if (h.type !== "fire" || !h.region) continue;
+        feats.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [h.region] } });
       }
-      const w = map.getSource("fire-wedge"), hl = map.getSource("fire-hull");
-      if (w)  w.setData({ type: "FeatureCollection", features: wedges });
-      if (hl) hl.setData({ type: "FeatureCollection", features: hulls });
+      const src = map.getSource("fire-region");
+      if (src) src.setData({ type: "FeatureCollection", features: feats });
     }
 
     // Repaint markers: one removable handle per hazard, plus the
@@ -999,23 +965,21 @@
       reroute();
     }
 
-    // Fire: starts wherever you click, road or open ground. It reaches
-    // out SEED_RADIUS for roads to catch, then runs downwind from there.
+    // Fire: starts wherever you click, road or open ground.
     async function addFire(lng, lat) {
       try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
-      const { nearest } = edgesNear(lng, lat, 0);
+      const nearest = nearestRoadMeters(lng, lat);
       if (nearest > FIRE_CAP_M) {
         showInfo("Nothing out here to burn. Nearest road is over 1.5 km away.", true);
         return;
       }
-      const plume = computePlume(lng, lat);
+      const p = computePlume(lng, lat);
       hazards.push({
         id: hazardSeq++, type: "fire", lng, lat,
-        edges: plume.edges, tips: plume.tips,
-        hull: plume.hull, wedge: plume.wedge,
+        edges: p.edges, tips: p.tips, region: p.region,
       });
       rebuildHazards();
-      if (plume.burned === 0) {
+      if (p.burned === 0) {
         showInfo(`Fire started ${Math.round(nearest)} m from the nearest road. Nothing burning yet.`, true);
       } else {
         reroute();
@@ -1032,14 +996,14 @@
       if (lastOrigin != null) doRoute(lastOrigin);
     }
 
-    // Re-grow every fire when wind or reach changes, coalesced to one
+    // Re-burn every fire when wind or reach changes, coalesced to one
     // pass per animation frame so dragging the dial stays smooth.
     function reSpreadFires() {
       let any = false;
       for (const h of hazards) {
         if (h.type !== "fire") continue;
         const p = computePlume(h.lng, h.lat);
-        h.edges = p.edges; h.tips = p.tips; h.hull = p.hull; h.wedge = p.wedge;
+        h.edges = p.edges; h.tips = p.tips; h.region = p.region;
         any = true;
       }
       if (any) { rebuildHazards(); reroute(); }
