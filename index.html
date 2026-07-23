@@ -703,7 +703,7 @@
     const CITY_LAT = 38.45;
     const KX = 111320 * Math.cos(CITY_LAT * Math.PI / 180), KY = 111320;
     const BACKING = 0.15;      // upwind reach, as a fraction of downwind reach
-    const SEED_RADIUS = 200;   // minimum radius the fire covers in every direction
+    const SEED_RADIUS = 100;   // minimum radius the fire covers in every direction
     const FIRE_CAP_M = 1500;   // past this, there is nothing out here to burn
     const SAMPLE_M = 30;       // how finely road shapes are tested against the area
     let SPREAD = 500;          // meters of downwind reach, from the slider
