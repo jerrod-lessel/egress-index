@@ -23,6 +23,7 @@
     --dim: #8a4a45;
     --amber: #ef9f27;
     --green: #639922;
+    --flood: #3a8fd9;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); }
@@ -114,7 +115,24 @@
     text-align: right; color: var(--ink);
   }
 
-  /* Markers. 🚧 / 🔥 are the removable handles; tip flames are just paint. */
+  /* Flood controls: just a stage slider. No wind, no direction. Water
+     goes where the ground lets it, so there is nothing to aim. Shown
+     only when the flood tool is armed, same pattern as the fire block. */
+  .flood-controls {
+    margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
+  }
+  .flood-copy { font-size: 11px; line-height: 1.5; color: var(--ink-dim); }
+  .stage-row {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 10px; font-size: 11px; color: var(--ink-dim);
+  }
+  .stage-row input[type=range] { flex: 1; accent-color: var(--flood); }
+  #stage-val {
+    font-variant-numeric: tabular-nums; min-width: 46px;
+    text-align: right; color: var(--ink);
+  }
+
+  /* Markers. 🚧 / 🔥 / 🌊 are the removable handles; tip flames are just paint. */
   .hazard-marker {
     font-size: 22px; line-height: 1; cursor: pointer;
     user-select: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.6));
@@ -193,6 +211,7 @@
     #title .tools { margin-top: 10px; padding-top: 10px; }
     #title .tool-hint { display: none; }
     #title .fire-controls { margin-top: 10px; padding-top: 10px; }
+    #title .flood-controls { margin-top: 10px; padding-top: 10px; }
 
     #title .brand { margin-bottom: 10px; }
     #title .brand-mark { width: 34px; height: 34px; }
@@ -236,6 +255,7 @@
   <div class="tools">
     <button id="obstruct-btn" class="tool-btn">🚧 Obstruction</button>
     <button id="fire-btn" class="tool-btn">🔥 Fire</button>
+    <button id="flood-btn" class="tool-btn">🌊 Flood</button>
     <button id="clear-btn" class="tool-btn ghost" style="display:none">Clear</button>
   </div>
 
@@ -257,6 +277,16 @@
       <span>Reach</span>
       <input id="spread-range" type="range" min="150" max="1200" step="50" value="500" />
       <span id="spread-val">500 m</span>
+    </div>
+  </div>
+
+  <!-- Stage, not reach. You set how deep, the terrain sets how far. -->
+  <div id="flood-controls" class="flood-controls" style="display:none">
+    <div class="flood-copy">Water rises this far above where you click, then spreads through low ground.</div>
+    <div class="stage-row">
+      <span>Stage</span>
+      <input id="stage-range" type="range" min="0.3" max="3" step="0.1" value="1" />
+      <span id="stage-val">1.0 m</span>
     </div>
   </div>
 
@@ -306,6 +336,34 @@
       document.querySelector("#legend .head").textContent = "Data file not found";
       return;
     }
+
+    // --- Flooded roads sit at the very bottom of the stack. There is no
+    //     water polygon on purpose: the honest claim is "these segments
+    //     are under water," not "the flood has this exact shape." ---
+    map.addSource("flood-roads", { type: "geojson", data: EMPTY });
+    map.addLayer({
+      id: "flood-glow",
+      type: "line",
+      source: "flood-roads",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#3a8fd9",
+        "line-blur": 4,
+        "line-opacity": 0.4,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 7, 15, 22],
+      },
+    });
+    map.addLayer({
+      id: "flood-core",
+      type: "line",
+      source: "flood-roads",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#7cc4f2",
+        "line-opacity": 0.8,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 6],
+      },
+    });
 
     // --- The burn footprint goes UNDER everything. It is the ground the
     //     fire covers; the roads inside it are what the router avoids. ---
@@ -494,7 +552,8 @@
     // ============================================================
 
     let G = null;
-    let adj = null;
+    let adj = null;   // directed, for routing: adj[node] -> outgoing edges
+    let inc = null;   // undirected, for the flood walk: inc[node] -> touching edges
     let graphPromise = null;
     let lastOrigin = null;
 
@@ -505,8 +564,15 @@
     function buildAdj(g) {
       const N = g.nodes.length;
       adj = Array.from({ length: N }, () => []);
+      inc = Array.from({ length: N }, () => []);
       g.edges.forEach((e, i) => {
+        // Routing only ever travels u -> v, so adj stays directional.
         adj[e.u].push({ to: e.v, ei: i });
+        // Water does not care about one-ways. inc lists every edge that
+        // touches a node from either end, which is what the flood walk
+        // needs to hop from one submerged segment to the next.
+        inc[e.u].push(i);
+        if (e.v !== e.u) inc[e.v].push(i);
       });
     }
 
@@ -672,7 +738,7 @@
       const km = (r.dist / 1000).toFixed(r.dist < 1000 ? 2 : 1);
       const dest = r.street || "a safety road";
       if (r.blocked) {
-        showInfo(`${km} km out \u2192 ${dest}. Heads up: this route crosses a blocked road. <span class="ms">\u00b7 ${ms} ms</span>`, true);
+        showInfo(`${km} km out \u2192 ${dest}. Heads up: this route crosses a closed road. <span class="ms">\u00b7 ${ms} ms</span>`, true);
       } else {
         showInfo(`${km} km out \u2192 ${dest} <span class="ms">\u00b7 ${ms} ms</span>`);
       }
@@ -694,6 +760,13 @@
     //  passes through that footprint is closed. That is why raising
     //  reach now catches roads that were outside a moment ago, and
     //  why fire does not care whether streets connect.
+    //
+    //  FLOOD MODEL: the mirror image of fire. Fire's slider is reach in
+    //  meters and the shape is what you set. Flood's slider is DEPTH,
+    //  and the reach is whatever the terrain gives you. Click a spot,
+    //  water rises to elev[S] + stage, then creeps outward through
+    //  connected low ground and stops when it hits high ground. You
+    //  never set the extent. It is emergent.
     // ============================================================
 
     const OBSTRUCTION_PENALTY = 10000000; // ~10,000 km of fake distance
@@ -710,20 +783,28 @@
     let windBearing = 225 * Math.PI / 180;  // clockwise from north; Diablo NE->SW
     let windVec = { x: Math.sin(windBearing), y: Math.cos(windBearing) };
 
+    // Flood model.
+    const FLOOD_SNAP_CAP_M = 150;  // the click must land near an intersection
+    let FLOOD_STAGE = 1.0;         // meters of water above the source node
+
     let hazards = [];
     let hazardSeq = 0;
     let hazardMarkers = [];
-    let activeType = null;   // null | "obstruction" | "fire"
+    let activeType = null;   // null | "obstruction" | "fire" | "flood"
 
     const obstructBtn = document.getElementById("obstruct-btn");
     const fireBtn     = document.getElementById("fire-btn");
+    const floodBtn    = document.getElementById("flood-btn");
     const fireControls= document.getElementById("fire-controls");
+    const floodControls = document.getElementById("flood-controls");
     const clearBtn    = document.getElementById("clear-btn");
     const hintEl      = document.getElementById("tool-hint");
     const dial        = document.getElementById("wind-dial");
     const windArrow   = document.getElementById("wind-arrow");
     const spreadRange = document.getElementById("spread-range");
     const spreadVal   = document.getElementById("spread-val");
+    const stageRange  = document.getElementById("stage-range");
+    const stageVal    = document.getElementById("stage-val");
 
     // Distance from a point to one edge, walking its full shape.
     function edgeDistance(ei, px, py, kx, ky) {
@@ -774,6 +855,79 @@
         if (r.d < best) best = r.d;
       }
       return best;
+    }
+
+    // Snap a click to the closest NODE (used by flood).
+    //
+    // Obstruction snaps to an edge because it closes one segment. Flood
+    // snaps to a node because it needs elev[S] as its datum: the water
+    // surface is measured from the ground at that intersection.
+    function snapToNode(lng, lat) {
+      const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
+      const px = lng * kx, py = lat * ky;
+      let best = { d: Infinity, n: -1 };
+      for (let i = 0; i < G.nodes.length; i++) {
+        const nd = G.nodes[i];
+        const d = Math.hypot(px - nd.x * kx, py - nd.y * ky);
+        if (d < best.d) best = { d, n: i };
+      }
+      return best;
+    }
+
+    // The flood fill. Breadth-first over EDGES, not nodes.
+    //
+    // Why edges: an edge's `emin` is the lowest ground found anywhere
+    // along it, sampled every 30 m in the elevation pipeline. 448 edges
+    // in this graph dip more than a meter below both of their own
+    // endpoints. Those are underpasses and creek crossings, and they are
+    // exactly the roads that drown first.
+    //
+    // If the walk moved node to node and tested elev[n], water could only
+    // reach a dip once the dip's corners were already under. The dips
+    // would almost never fire. Walking edge to edge on `emin` instead
+    // lets water follow a chain of dips, which is what a creek corridor
+    // crossed by several streets physically is.
+    //
+    // Hills still stop it. A segment climbing 30 m -> 60 m has emin 30,
+    // so at W = 40 it counts as submerged (its lower half really is under
+    // water). The NEXT segment up runs 60 -> 100, emin 60, above W, and
+    // the walk halts. Each climb has to clear its own low point.
+    function computeFlood(startNode, stage) {
+      const base = G.nodes[startNode].elev;
+      if (base == null) return { edges: [], W: null, count: 0 };
+      const W = base + stage;                 // water surface, meters above sea level
+
+      const seen = new Uint8Array(G.edges.length);
+      const queue = [];
+      const wet = [];
+
+      // Seed with every submerged edge touching the source intersection.
+      for (const ei of inc[startNode]) {
+        if (seen[ei]) continue;
+        if (G.edges[ei].emin <= W) { seen[ei] = 1; queue.push(ei); wet.push(ei); }
+      }
+
+      // Then walk: from a submerged edge, step to any submerged edge that
+      // shares either of its endpoints. Water only travels through water.
+      for (let qi = 0; qi < queue.length; qi++) {
+        const e = G.edges[queue[qi]];
+        for (const nid of (e.u === e.v ? [e.u] : [e.u, e.v])) {
+          for (const ej of inc[nid]) {
+            if (seen[ej]) continue;
+            if (G.edges[ej].emin <= W) { seen[ej] = 1; queue.push(ej); wet.push(ej); }
+          }
+        }
+      }
+
+      // Close the reverse direction too. A road under water is under
+      // water both ways.
+      const cut = new Set(wet);
+      for (const ei of wet) {
+        const p = G.edges[ei].pair;
+        if (p != null) cut.add(p);
+      }
+
+      return { edges: [...cut], W, count: cut.size };
     }
 
     // How far the fire reaches at a given angle off the wind, in meters.
@@ -893,6 +1047,7 @@
         }
       }
       drawPlume();
+      drawFloods();
       drawRegions();
       drawHazards();
       clearBtn.style.display = hazards.length ? "" : "none";
@@ -920,6 +1075,29 @@
       if (src) src.setData({ type: "FeatureCollection", features: feats });
     }
 
+    // Paint every submerged road once (dedupe an edge against its pair).
+    // No polygon, no hull: the blue IS the claim.
+    function drawFloods() {
+      if (!G) return;
+      const feats = [], seen = new Set();
+      for (const h of hazards) {
+        if (h.type !== "flood") continue;
+        for (const ei of h.edges) {
+          const e = G.edges[ei];
+          const canon = (e.pair != null && e.pair < ei) ? e.pair : ei;
+          if (seen.has(canon)) continue;
+          seen.add(canon);
+          const ce = G.edges[canon];
+          const coords = [[G.nodes[ce.u].x, G.nodes[ce.u].y]];
+          if (ce.geom) for (const pt of ce.geom) coords.push(pt);
+          coords.push([G.nodes[ce.v].x, G.nodes[ce.v].y]);
+          feats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+        }
+      }
+      const src = map.getSource("flood-roads");
+      if (src) src.setData({ type: "FeatureCollection", features: feats });
+    }
+
     // Paint each fire's burn footprint.
     function drawRegions() {
       const feats = [];
@@ -939,8 +1117,14 @@
       for (const h of hazards) {
         const el = document.createElement("div");
         el.className = "hazard-marker";
-        el.textContent = h.type === "fire" ? "\uD83D\uDD25" : "\uD83D\uDEA7";
-        el.title = h.type === "fire" ? "Click to remove this fire" : "Click to remove this block";
+        el.textContent =
+          h.type === "fire" ? "\uD83D\uDD25"
+          : h.type === "flood" ? "\uD83C\uDF0A"
+          : "\uD83D\uDEA7";
+        el.title =
+          h.type === "fire" ? "Click to remove this fire"
+          : h.type === "flood" ? "Click to remove this flood"
+          : "Click to remove this block";
         el.addEventListener("click", (ev) => {
           ev.stopPropagation();
           removeHazard(h.id);
@@ -998,6 +1182,35 @@
       }
     }
 
+    // Flood: snaps to the nearest intersection, because it needs that
+    // node's ground height as the datum for the water surface.
+    async function addFlood(lng, lat) {
+      try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
+      const snap = snapToNode(lng, lat);
+      if (snap.n < 0 || snap.d > FLOOD_SNAP_CAP_M) {
+        showInfo("No intersection within 150 m of there. Click closer to a street corner.", true);
+        return;
+      }
+      if (G.nodes[snap.n].elev == null) {
+        showInfo("No elevation data on this graph, so flooding can't be modeled.", true);
+        return;
+      }
+      const nd = G.nodes[snap.n];
+      const f = computeFlood(snap.n, FLOOD_STAGE);
+      hazards.push({
+        id: hazardSeq++, type: "flood",
+        lng: nd.x, lat: nd.y, node: snap.n,
+        W: f.W, edges: f.edges,
+      });
+      rebuildHazards();
+      if (f.count === 0) {
+        // High ground plus a low stage. Say so instead of failing quietly.
+        showInfo("Nothing floods here. Raise the stage or pick lower ground.", true);
+      } else {
+        reroute();
+      }
+    }
+
     function removeHazard(id) {
       hazards = hazards.filter((h) => h.id !== id);
       rebuildHazards();
@@ -1026,22 +1239,45 @@
       windRaf = requestAnimationFrame(() => { windRaf = 0; reSpreadFires(); });
     }
 
+    // Same idea for the stage slider: re-fill every placed flood, one
+    // pass per animation frame so dragging stays smooth.
+    function reFloods() {
+      let any = false;
+      for (const h of hazards) {
+        if (h.type !== "flood") continue;
+        const f = computeFlood(h.node, FLOOD_STAGE);
+        h.edges = f.edges; h.W = f.W;
+        any = true;
+      }
+      if (any) { rebuildHazards(); reroute(); }
+    }
+    let stageRaf = 0;
+    function scheduleReFlood() {
+      if (stageRaf) return;
+      stageRaf = requestAnimationFrame(() => { stageRaf = 0; reFloods(); });
+    }
+
     // --- Tool arming. One type at a time; clicking the armed one disarms. ---
     function setActiveType(type) {
       activeType = (activeType === type) ? null : type;
       obstructBtn.classList.toggle("active", activeType === "obstruction");
       fireBtn.classList.toggle("active", activeType === "fire");
+      floodBtn.classList.toggle("active", activeType === "flood");
       fireControls.style.display = activeType === "fire" ? "" : "none";
+      floodControls.style.display = activeType === "flood" ? "" : "none";
       map.getCanvas().style.cursor = activeType ? "crosshair" : "";
       hintEl.textContent =
         activeType === "fire"
           ? "Click anywhere to start a fire. Drag the dial to aim the wind."
+          : activeType === "flood"
+          ? "Click a low spot to let water in. The ground decides how far it goes."
           : activeType === "obstruction"
           ? "Click any road to drop a block. Click a \uD83D\uDEA7 to remove it."
           : "Close a road, watch the way out rethink itself.";
     }
     obstructBtn.addEventListener("click", () => setActiveType("obstruction"));
     fireBtn.addEventListener("click", () => setActiveType("fire"));
+    floodBtn.addEventListener("click", () => setActiveType("flood"));
     clearBtn.addEventListener("click", () => { hazards = []; rebuildHazards(); reroute(); });
 
     // --- Wind dial. Drag to aim; bearing is clockwise from north. ---
@@ -1071,6 +1307,12 @@
       SPREAD = +spreadRange.value;
       spreadVal.textContent = SPREAD + " m";
       scheduleReSpread();
+    });
+
+    stageRange.addEventListener("input", () => {
+      FLOOD_STAGE = +stageRange.value;
+      stageVal.textContent = FLOOD_STAGE.toFixed(1) + " m";
+      scheduleReFlood();
     });
 
     // --- Click handler: popup + routing for dots, unless a tool is armed. ---
@@ -1105,6 +1347,7 @@
     map.on("click", (e) => {
       if (activeType === "obstruction") { addObstruction(e.lngLat.lng, e.lngLat.lat); return; }
       if (activeType === "fire") { addFire(e.lngLat.lng, e.lngLat.lat); return; }
+      if (activeType === "flood") { addFlood(e.lngLat.lng, e.lngLat.lat); return; }
       const hit = map.queryRenderedFeatures(e.point, { layers: ["egress-points"] });
       if (!hit.length) { lastOrigin = null; clearRoute(); hideInfo(); }
     });
