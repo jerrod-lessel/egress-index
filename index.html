@@ -347,6 +347,39 @@
     //     are under water," not "the flood has this exact shape." ---
     map.addSource("flood-roads", { type: "geojson", data: EMPTY });
 
+    // The wetted corridor. This is NOT a hull and it is not a guess at
+    // the water's shape off-road.
+    //
+    // The volume model charges the budget for a strip FLOOD_CORRIDOR_M
+    // wide along every flooded road. This layer draws that exact strip,
+    // so the polygon is the model's own bookkeeping made visible rather
+    // than a claim about ground nobody computed. That is the difference
+    // between this and the convex hull the fire layer used to draw and
+    // had to have torn out.
+    //
+    // Width is pinned to true ground meters at every zoom. Exponential
+    // interpolation with base 2 doubles the pixel width for each zoom
+    // level, which is exactly how ground distance scales, so 30 m stays
+    // 30 m whether you are at z11 or z17.
+    //
+    //   meters per pixel = 156543.03 * cos(38.45°) / 2^zoom
+    //   30 m  ->  0.25 px at z10,  64.13 px at z18
+    //
+    // Flat color on purpose. Overlapping bands stack slightly darker at
+    // junctions, and a depth ramp on top of that would read as depth
+    // where it is really just overlap.
+    map.addLayer({
+      id: "flood-band",
+      type: "line",
+      source: "flood-roads",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#3a8fd9",
+        "line-opacity": 0.16,
+        "line-width": ["interpolate", ["exponential", 2], ["zoom"], 10, 0.25, 18, 64.13],
+      },
+    });
+
     // Shallow: wet, but under six inches, so still drivable. Drawn faint
     // and thin so it reads as "water got here" without claiming closure.
     map.addLayer({
@@ -825,7 +858,9 @@
     let windVec = { x: Math.sin(windBearing), y: Math.cos(windBearing) };
 
     // Flood model.
-    const FLOOD_SNAP_CAP_M = 150;   // the click must land near an intersection
+    const FLOOD_SNAP_CAP_M = 1500;  // same reach as fire. Water entering off-road
+                                    // runs overland to pavement, and the runoff
+                                    // phase takes it from there
     const FLOOD_CORRIDOR_M = 30;    // assumed width of the wetted strip along a road
     const FLOOD_GRADIENT = 0.01;    // water surface drops 10 m per km travelled
     const FLOOD_REACH_CAP_M = 4000; // past this it is not a local flood, and the
@@ -1366,13 +1401,15 @@
       }
     }
 
-    // Flood: snaps to the nearest intersection, because it needs that
-    // node's ground height as the datum for the water surface.
+    // Flood: click anywhere, same as fire. It snaps to the nearest
+    // intersection because it needs that node's ground height as the
+    // datum for the water surface, so the marker lands where the water
+    // actually enters the network rather than under your cursor.
     async function addFlood(lng, lat) {
       try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
       const snap = snapToNode(lng, lat);
       if (snap.n < 0 || snap.d > FLOOD_SNAP_CAP_M) {
-        showInfo("No intersection within 150 m of there. Click closer to a street corner.", true);
+        showInfo("No road within 1.5 km of there. Nothing out that far to flood.", true);
         return;
       }
       if (G.nodes[snap.n].elev == null) {
