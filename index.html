@@ -115,21 +115,25 @@
     text-align: right; color: var(--ink);
   }
 
-  /* Flood controls: just a stage slider. No wind, no direction. Water
-     goes where the ground lets it, so there is nothing to aim. Shown
-     only when the flood tool is armed, same pattern as the fire block. */
+  /* Flood controls: one slider, how much water got loose. No wind, no
+     direction, no reach. Water goes where the ground lets it, so there
+     is nothing to aim and nothing to size. Shown only when the flood
+     tool is armed, same pattern as the fire block. */
   .flood-controls {
     margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px;
   }
-  .flood-copy { font-size: 11px; line-height: 1.5; color: var(--ink-dim); }
-  .stage-row {
+  .vol-row {
     display: flex; align-items: center; gap: 10px;
-    margin-top: 10px; font-size: 11px; color: var(--ink-dim);
+    font-size: 11px; color: var(--ink-dim);
   }
-  .stage-row input[type=range] { flex: 1; accent-color: var(--flood); }
-  #stage-val {
-    font-variant-numeric: tabular-nums; min-width: 46px;
+  .vol-row input[type=range] { flex: 1; accent-color: var(--flood); }
+  #vol-val {
+    font-variant-numeric: tabular-nums; min-width: 74px;
     text-align: right; color: var(--ink);
+  }
+  .flood-copy {
+    font-size: 11px; line-height: 1.5; color: var(--flood);
+    margin-top: 7px; letter-spacing: 0.02em;
   }
 
   /* Markers. 🚧 / 🔥 / 🌊 are the removable handles; tip flames are just paint. */
@@ -280,14 +284,15 @@
     </div>
   </div>
 
-  <!-- Stage, not reach. You set how deep, the terrain sets how far. -->
+  <!-- Volume, not depth and not reach. You say how much water got out.
+       The ground decides how far it goes and how deep it stands. -->
   <div id="flood-controls" class="flood-controls" style="display:none">
-    <div class="flood-copy">Water rises this far above where you click, then spreads through low ground.</div>
-    <div class="stage-row">
-      <span>Stage</span>
-      <input id="stage-range" type="range" min="0.3" max="3" step="0.1" value="1" />
-      <span id="stage-val">1.0 m</span>
+    <div class="vol-row">
+      <span>Water</span>
+      <input id="vol-range" type="range" min="0" max="100" step="1" value="40" />
+      <span id="vol-val">50,000 m³</span>
     </div>
+    <div class="flood-copy" id="vol-tier">Creek overtops</div>
   </div>
 
   <div class="tool-hint" id="tool-hint">Close a road, watch the way out rethink itself.</div>
@@ -341,10 +346,35 @@
     //     water polygon on purpose: the honest claim is "these segments
     //     are under water," not "the flood has this exact shape." ---
     map.addSource("flood-roads", { type: "geojson", data: EMPTY });
+
+    // Shallow: wet, but under six inches, so still drivable. Drawn faint
+    // and thin so it reads as "water got here" without claiming closure.
+    map.addLayer({
+      id: "flood-shallow",
+      type: "line",
+      source: "flood-roads",
+      filter: ["<", ["get", "depth"], 0.15],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#9fd8f5",
+        "line-opacity": 0.4,
+        "line-dasharray": [2, 2],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 2.6],
+      },
+    });
+
+    // Deep: over six inches, closed, and shaded by how deep it stands.
+    const floodShade = [
+      "interpolate", ["linear"], ["get", "depth"],
+      0.15, "#7cc4f2",
+      1.0,  "#3a8fd9",
+      3.0,  "#1b4f8c",
+    ];
     map.addLayer({
       id: "flood-glow",
       type: "line",
       source: "flood-roads",
+      filter: [">=", ["get", "depth"], 0.15],
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
         "line-color": "#3a8fd9",
@@ -357,10 +387,11 @@
       id: "flood-core",
       type: "line",
       source: "flood-roads",
+      filter: [">=", ["get", "depth"], 0.15],
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
-        "line-color": "#7cc4f2",
-        "line-opacity": 0.8,
+        "line-color": floodShade,
+        "line-opacity": 0.85,
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 6],
       },
     });
@@ -762,11 +793,21 @@
     //  why fire does not care whether streets connect.
     //
     //  FLOOD MODEL: the mirror image of fire. Fire's slider is reach in
-    //  meters and the shape is what you set. Flood's slider is DEPTH,
-    //  and the reach is whatever the terrain gives you. Click a spot,
-    //  water rises to elev[S] + stage, then creeps outward through
-    //  connected low ground and stops when it hits high ground. You
-    //  never set the extent. It is emergent.
+    //  meters, so the shape is what you set. Flood's slider is VOLUME,
+    //  how much water got loose, and the shape is whatever the terrain
+    //  does with it.
+    //
+    //  An earlier version set the water surface directly (elev of the
+    //  click, plus a depth). That describes a reservoir with unlimited
+    //  water behind it, so in a valley town every click drowned most of
+    //  the map. Correct for a lake, nonsense for a broken main.
+    //
+    //  Now: water runs downhill from the click for free, ponds at the
+    //  low spot it finds, and spreads under a surface that DROPS as it
+    //  travels, 10 m per km, the way real water loses head. Volume sets
+    //  how high that surface starts. Distance is what stops it on flat
+    //  ground; terrain is what stops it on slopes. The extent is
+    //  emergent, and bounded.
     // ============================================================
 
     const OBSTRUCTION_PENALTY = 10000000; // ~10,000 km of fake distance
@@ -784,8 +825,28 @@
     let windVec = { x: Math.sin(windBearing), y: Math.cos(windBearing) };
 
     // Flood model.
-    const FLOOD_SNAP_CAP_M = 150;  // the click must land near an intersection
-    let FLOOD_STAGE = 1.0;         // meters of water above the source node
+    const FLOOD_SNAP_CAP_M = 150;   // the click must land near an intersection
+    const FLOOD_CORRIDOR_M = 30;    // assumed width of the wetted strip along a road
+    const FLOOD_GRADIENT = 0.01;    // water surface drops 10 m per km travelled
+    const FLOOD_REACH_CAP_M = 4000; // past this it is not a local flood, and the
+                                    // cap is what keeps a slider drag inside a frame
+    const FLOOD_DEPTH_CUT_M = 0.15; // six inches. Below this a car still goes through
+    let FLOOD_VOLUME = 50000;       // cubic meters of water released, from the slider
+
+    // Log slider: 5,000 m³ at one end, 3,000,000 at the other. The range
+    // is deliberately narrower than real flood volumes span, because
+    // below 5,000 the extent stops responding (the pond just gets a
+    // little deeper in place) and above 3,000,000 it stops being local,
+    // which is the whole point of having the knob.
+    function volumeFromSlider(x) {
+      return Math.round(10 ** (3.7 + (x / 100) * 2.78));
+    }
+    function volumeTier(v) {
+      if (v < 20000) return "Busted main";
+      if (v < 150000) return "Storm drain gives up";
+      if (v < 800000) return "Creek overtops";
+      return "Levee fails";
+    }
 
     let hazards = [];
     let hazardSeq = 0;
@@ -803,8 +864,9 @@
     const windArrow   = document.getElementById("wind-arrow");
     const spreadRange = document.getElementById("spread-range");
     const spreadVal   = document.getElementById("spread-val");
-    const stageRange  = document.getElementById("stage-range");
-    const stageVal    = document.getElementById("stage-val");
+    const volRange    = document.getElementById("vol-range");
+    const volVal      = document.getElementById("vol-val");
+    const volTier     = document.getElementById("vol-tier");
 
     // Distance from a point to one edge, walking its full shape.
     function edgeDistance(ei, px, py, kx, ky) {
@@ -874,60 +936,175 @@
       return best;
     }
 
-    // The flood fill. Breadth-first over EDGES, not nodes.
-    //
-    // Why edges: an edge's `emin` is the lowest ground found anywhere
-    // along it, sampled every 30 m in the elevation pipeline. 448 edges
-    // in this graph dip more than a meter below both of their own
-    // endpoints. Those are underpasses and creek crossings, and they are
-    // exactly the roads that drown first.
-    //
-    // If the walk moved node to node and tested elev[n], water could only
-    // reach a dip once the dip's corners were already under. The dips
-    // would almost never fire. Walking edge to edge on `emin` instead
-    // lets water follow a chain of dips, which is what a creek corridor
-    // crossed by several streets physically is.
-    //
-    // Hills still stop it. A segment climbing 30 m -> 60 m has emin 30,
-    // so at W = 40 it counts as submerged (its lower half really is under
-    // water). The NEXT segment up runs 60 -> 100, emin 60, above W, and
-    // the walk halts. Each climb has to clear its own low point.
-    function computeFlood(startNode, stage) {
-      const base = G.nodes[startNode].elev;
-      if (base == null) return { edges: [], W: null, count: 0 };
-      const W = base + stage;                 // water surface, meters above sea level
+    // Two directed edges describe the same pavement. Everything the
+    // flood measures (area, depth, volume) has to count that pavement
+    // once, so all flood bookkeeping happens in canonical edge space.
+    function canonOf(ei) {
+      const e = G.edges[ei];
+      return (e.pair != null && e.pair < ei) ? e.pair : ei;
+    }
 
-      const seen = new Uint8Array(G.edges.length);
-      const queue = [];
-      const wet = [];
+    // ---------- Phase 1: runoff ----------
+    //
+    // Water released on a slope does not stand there. It runs to the
+    // nearest low ground and ponds THERE. So before anything fills, walk
+    // downhill from the click for free, following the lowest road out of
+    // each intersection, and see where it settles.
+    //
+    // This is what makes a hillside break look like a hillside break: a
+    // thin ribbon running down, ending in a puddle.
+    function drainTo(startNode) {
+      const runoff = [];
+      const seenNode = new Uint8Array(G.nodes.length);
+      let cur = startNode;
+      seenNode[cur] = 1;
 
-      // Seed with every submerged edge touching the source intersection.
-      for (const ei of inc[startNode]) {
-        if (seen[ei]) continue;
-        if (G.edges[ei].emin <= W) { seen[ei] = 1; queue.push(ei); wet.push(ei); }
+      for (let guard = 0; guard < 500; guard++) {
+        let bestEi = -1, bestEmin = Infinity, bestNext = -1;
+        for (const ei of inc[cur]) {
+          const e = G.edges[ei];
+          const other = (e.u === cur) ? e.v : e.u;
+          if (seenNode[other]) continue;
+          // Downhill only. Water does not climb out of an intersection.
+          if (G.nodes[other].elev >= G.nodes[cur].elev) continue;
+          if (e.emin < bestEmin) { bestEmin = e.emin; bestEi = ei; bestNext = other; }
+        }
+        if (bestEi < 0) break;          // local low point, this is the sink
+        runoff.push(canonOf(bestEi));
+        seenNode[bestNext] = 1;
+        cur = bestNext;
       }
+      return { sink: cur, runoff };
+    }
 
-      // Then walk: from a submerged edge, step to any submerged edge that
-      // shares either of its endpoints. Water only travels through water.
-      for (let qi = 0; qi < queue.length; qi++) {
-        const e = G.edges[queue[qi]];
-        for (const nid of (e.u === e.v ? [e.u] : [e.u, e.v])) {
-          for (const ej of inc[nid]) {
-            if (seen[ej]) continue;
-            if (G.edges[ej].emin <= W) { seen[ej] = 1; queue.push(ej); wet.push(ej); }
+    // ---------- Phase 2: the spreading pond ----------
+    //
+    // The water surface is NOT flat. That was the first version's mistake
+    // and it is worth spelling out, because the terrain here punishes it.
+    //
+    // Santa Rosa's valley floor is flat and its roads average 61.6 m at
+    // the low point. Put a level surface anywhere down there and raising
+    // it TEN CENTIMETERS wets 6,071 of the 8,531 road segments in one
+    // step, because they are all near the same height and all connected.
+    // Wetted area starts at 27 km² and stays there. So a level model has
+    // exactly two settings, nothing and everything, and no volume budget
+    // can find a middle that does not exist.
+    //
+    // Real water does not level out across 27 km². It loses head as it
+    // travels. So the surface starts high at the source and falls off
+    // with distance along the network:
+    //
+    //     surface(d) = W_source - FLOOD_GRADIENT * d
+    //
+    // That makes distance from the break the thing that stops the water
+    // on flat ground, which is what actually stops it in the field, while
+    // terrain still stops it on slopes.
+    //
+    // Walking edges rather than nodes is still the point. An edge's
+    // `emin` is the lowest ground anywhere along it, sampled every 30 m
+    // in the pipeline. 448 edges dip more than a meter below both of
+    // their own endpoints: underpasses and creek crossings, the roads
+    // that drown first. Gating on node elevation would miss every one of
+    // them. Gating on emin lets water follow a chain of dips, which is
+    // what a creek corridor crossed by several streets physically is.
+    //
+    // Volume is a proxy: wetted length times an assumed corridor width
+    // times depth. It charges a segment's whole length at its deepest
+    // point, so long steep roads cost more than they should. The model
+    // therefore spends fast and floods conservatively, which is the safer
+    // direction to be wrong in.
+    function floodAt(sink, Wsrc, collect) {
+      const dist = new Float64Array(G.nodes.length).fill(Infinity);
+      const doneE = new Uint8Array(G.edges.length);
+      const wet = collect ? [] : null;
+      let vol = 0;
+
+      // Dijkstra by real road distance, but water only travels through
+      // roads it has already flooded. Dry pavement is a wall.
+      const heap = new MinHeap();
+      dist[sink] = 0;
+      heap.push(sink, 0);
+
+      while (heap.size) {
+        const u = heap.pop();
+        const du = dist[u];
+        const surf = Wsrc - FLOOD_GRADIENT * du;   // how high the water stands here
+
+        for (const ei of inc[u]) {
+          const c = canonOf(ei);
+          if (!doneE[c]) {
+            if (G.edges[c].emin > surf) continue;   // still dry, water stops
+            doneE[c] = 1;
+            const depth = surf - G.edges[c].emin;
+            vol += G.edges[c].len * FLOOD_CORRIDOR_M * depth;
+            if (wet) wet.push([c, depth]);
           }
+          const e = G.edges[ei];
+          const other = (e.u === u) ? e.v : e.u;
+          const nd = du + e.len;
+          if (nd > FLOOD_REACH_CAP_M) continue;   // stop chasing water across the county
+          if (nd < dist[other]) { dist[other] = nd; heap.push(other, nd); }
         }
       }
+      return { vol, wet };
+    }
 
-      // Close the reverse direction too. A road under water is under
-      // water both ways.
-      const cut = new Set(wet);
-      for (const ei of wet) {
-        const p = G.edges[ei].pair;
+    // ---------- Putting it together ----------
+    //
+    // Volume in, extent out. Find the water surface that spends exactly
+    // the budget. Volume only ever grows as the surface rises (more roads
+    // reached, and deeper over each), so the level can be found by
+    // bisection instead of a step-by-step fill.
+    function computeFlood(startNode, volume) {
+      if (G.nodes[startNode].elev == null) {
+        return { edges: [], wet: [], W: null, cutCount: 0 };
+      }
+
+      const { sink, runoff } = drainTo(startNode);
+
+      // Nothing is under water below the bottom of the lowest road
+      // touching the sink, so that is where the search starts.
+      let lo = Infinity;
+      for (const ei of inc[sink]) lo = Math.min(lo, G.edges[ei].emin);
+      if (!isFinite(lo)) return { edges: [], wet: [], W: null, cutCount: 0 };
+
+      // Bracket the answer. Start fine, because a broken main is a small
+      // number and a coarse first step would swallow the whole low end of
+      // the slider. Double until the pond holds more than the budget.
+      let hi = lo + 0.02;
+      while (hi - lo < 100 && floodAt(sink, hi, false).vol < volume) {
+        hi = lo + (hi - lo) * 2;
+      }
+
+      // 12 bisections is already well under a centimeter of surface, and
+      // every extra one costs a full pass over the network.
+      for (let i = 0; i < 12; i++) {
+        const mid = (lo + hi) / 2;
+        if (floodAt(sink, mid, false).vol < volume) lo = mid; else hi = mid;
+      }
+      const W = lo;
+
+      const depthOf = new Map(floodAt(sink, W, true).wet);
+
+      // Runoff roads carry a moving sheet, not standing water. Give them
+      // a token depth so they draw pale and stay open.
+      for (const c of runoff) if (!depthOf.has(c)) depthOf.set(c, 0.05);
+
+      // Six inches of moving water stops a car. Above that the road is
+      // closed; below it, it is just wet.
+      const cut = new Set();
+      for (const [c, d] of depthOf) {
+        if (d < FLOOD_DEPTH_CUT_M) continue;
+        cut.add(c);
+        const p = G.edges[c].pair;
         if (p != null) cut.add(p);
       }
 
-      return { edges: [...cut], W, count: cut.size };
+      return {
+        edges: [...cut],            // what the router reads
+        wet: [...depthOf.entries()],// what the map draws
+        W, cutCount: cut.size,
+      };
     }
 
     // How far the fire reaches at a given angle off the wind, in meters.
@@ -1079,20 +1256,27 @@
     // No polygon, no hull: the blue IS the claim.
     function drawFloods() {
       if (!G) return;
-      const feats = [], seen = new Set();
+      const feats = [], deepest = new Map();
+
+      // Two floods can overlap. Where they do, the deeper one wins, so a
+      // segment never draws twice at two different shades.
       for (const h of hazards) {
-        if (h.type !== "flood") continue;
-        for (const ei of h.edges) {
-          const e = G.edges[ei];
-          const canon = (e.pair != null && e.pair < ei) ? e.pair : ei;
-          if (seen.has(canon)) continue;
-          seen.add(canon);
-          const ce = G.edges[canon];
-          const coords = [[G.nodes[ce.u].x, G.nodes[ce.u].y]];
-          if (ce.geom) for (const pt of ce.geom) coords.push(pt);
-          coords.push([G.nodes[ce.v].x, G.nodes[ce.v].y]);
-          feats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+        if (h.type !== "flood" || !h.wet) continue;
+        for (const [c, d] of h.wet) {
+          if (!deepest.has(c) || d > deepest.get(c)) deepest.set(c, d);
         }
+      }
+
+      for (const [c, d] of deepest) {
+        const ce = G.edges[c];
+        const coords = [[G.nodes[ce.u].x, G.nodes[ce.u].y]];
+        if (ce.geom) for (const pt of ce.geom) coords.push(pt);
+        coords.push([G.nodes[ce.v].x, G.nodes[ce.v].y]);
+        feats.push({
+          type: "Feature",
+          properties: { depth: Math.round(d * 100) / 100 },
+          geometry: { type: "LineString", coordinates: coords },
+        });
       }
       const src = map.getSource("flood-roads");
       if (src) src.setData({ type: "FeatureCollection", features: feats });
@@ -1196,16 +1380,21 @@
         return;
       }
       const nd = G.nodes[snap.n];
-      const f = computeFlood(snap.n, FLOOD_STAGE);
+      const f = computeFlood(snap.n, FLOOD_VOLUME);
       hazards.push({
         id: hazardSeq++, type: "flood",
         lng: nd.x, lat: nd.y, node: snap.n,
-        W: f.W, edges: f.edges,
+        W: f.W, edges: f.edges, wet: f.wet,
       });
       rebuildHazards();
-      if (f.count === 0) {
-        // High ground plus a low stage. Say so instead of failing quietly.
-        showInfo("Nothing floods here. Raise the stage or pick lower ground.", true);
+      if (f.cutCount === 0) {
+        // Either the water never arrived, or it arrived and stayed
+        // ankle deep. Different problems, different sentences.
+        if (f.wet.length === 0) {
+          showInfo("Nothing floods here. Turn the water up or pick lower ground.", true);
+        } else {
+          showInfo("Water spreads but stays under six inches. Nothing closes yet.", true);
+        }
       } else {
         reroute();
       }
@@ -1245,8 +1434,8 @@
       let any = false;
       for (const h of hazards) {
         if (h.type !== "flood") continue;
-        const f = computeFlood(h.node, FLOOD_STAGE);
-        h.edges = f.edges; h.W = f.W;
+        const f = computeFlood(h.node, FLOOD_VOLUME);
+        h.edges = f.edges; h.wet = f.wet; h.W = f.W;
         any = true;
       }
       if (any) { rebuildHazards(); reroute(); }
@@ -1309,9 +1498,16 @@
       scheduleReSpread();
     });
 
-    stageRange.addEventListener("input", () => {
-      FLOOD_STAGE = +stageRange.value;
-      stageVal.textContent = FLOOD_STAGE.toFixed(1) + " m";
+    function renderVolume() {
+      volVal.textContent = FLOOD_VOLUME.toLocaleString() + " m\u00B3";
+      volTier.textContent = volumeTier(FLOOD_VOLUME);
+    }
+    FLOOD_VOLUME = volumeFromSlider(+volRange.value);
+    renderVolume();
+
+    volRange.addEventListener("input", () => {
+      FLOOD_VOLUME = volumeFromSlider(+volRange.value);
+      renderVolume();
       scheduleReFlood();
     });
 
