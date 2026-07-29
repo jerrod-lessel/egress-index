@@ -380,8 +380,10 @@
       },
     });
 
-    // Shallow: wet, but under six inches, so still drivable. Drawn faint
-    // and thin so it reads as "water got here" without claiming closure.
+    // Shallow: standing water under six inches, so still drivable. This
+    // is pond fringe with a real measured depth, not the runoff path,
+    // which now has its own layer. Short dashes, distinct from the long
+    // dashes on the runoff path.
     map.addLayer({
       id: "flood-shallow",
       type: "line",
@@ -426,6 +428,40 @@
         "line-color": floodShade,
         "line-opacity": 0.85,
         "line-width": ["interpolate", ["linear"], ["zoom"], 10, 2, 15, 6],
+      },
+    });
+
+    // The downhill path water took to reach its pond. Long dashes so it
+    // does not read as the short-dashed shallow standing water, plus
+    // chevrons that point the way the water went.
+    map.addSource("flood-runoff", { type: "geojson", data: EMPTY });
+    map.addLayer({
+      id: "flood-runoff-line",
+      type: "line",
+      source: "flood-runoff",
+      layout: { "line-cap": "butt", "line-join": "round" },
+      paint: {
+        "line-color": "#bfe6fa",
+        "line-opacity": 0.5,
+        "line-dasharray": [1, 3],
+        "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 15, 2.2],
+      },
+    });
+
+    // Chevrons are drawn as plain line geometry rather than font glyphs,
+    // because a symbol layer needs the basemap style to ship glyphs and
+    // that is not something worth depending on. Arms are a fixed 14 m on
+    // the ground, stroked in pixels, so they stay visible at every zoom.
+    map.addSource("flood-arrows", { type: "geojson", data: EMPTY });
+    map.addLayer({
+      id: "flood-arrows",
+      type: "line",
+      source: "flood-arrows",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": "#e4f4fd",
+        "line-opacity": 0.8,
+        "line-width": ["interpolate", ["linear"], ["zoom"], 12, 1, 16, 2],
       },
     });
 
@@ -1005,7 +1041,10 @@
           if (e.emin < bestEmin) { bestEmin = e.emin; bestEi = ei; bestNext = other; }
         }
         if (bestEi < 0) break;          // local low point, this is the sink
-        runoff.push(canonOf(bestEi));
+        // Record which way the water went, not just which pavement it
+        // used. The arrows need the direction and a canonical edge id
+        // has no direction in it.
+        runoff.push({ c: canonOf(bestEi), from: cur, to: bestNext });
         seenNode[bestNext] = 1;
         cur = bestNext;
       }
@@ -1121,9 +1160,12 @@
 
       const depthOf = new Map(floodAt(sink, W, true).wet);
 
-      // Runoff roads carry a moving sheet, not standing water. Give them
-      // a token depth so they draw pale and stay open.
-      for (const c of runoff) if (!depthOf.has(c)) depthOf.set(c, 0.05);
+      // Runoff roads are NOT in this list. They carry a moving sheet, not
+      // standing water, so they have no meaningful depth and they get
+      // their own layer with arrows instead. Earlier versions gave them a
+      // token 0.05 m, which meant a made-up number was drawn in the same
+      // style as measured ones. A runoff road that genuinely IS under the
+      // pond still shows up here on its real depth, which is correct.
 
       // Six inches of moving water stops a car. Above that the road is
       // closed; below it, it is just wet.
@@ -1137,7 +1179,8 @@
 
       return {
         edges: [...cut],            // what the router reads
-        wet: [...depthOf.entries()],// what the map draws
+        wet: [...depthOf.entries()],// standing water, with real depths
+        runoff,                     // the downhill path, with direction
         W, cutCount: cut.size,
       };
     }
@@ -1289,11 +1332,58 @@
 
     // Paint every submerged road once (dedupe an edge against its pair).
     // No polygon, no hull: the blue IS the claim.
+    // Build a segment's shape, oriented so it starts at `from`. Stored
+    // geometry is always in u -> v order, so walking it backwards is a
+    // reverse, not a re-fetch.
+    function edgeShape(c, from) {
+      const ce = G.edges[c];
+      const coords = [[G.nodes[ce.u].x, G.nodes[ce.u].y]];
+      if (ce.geom) for (const pt of ce.geom) coords.push(pt);
+      coords.push([G.nodes[ce.v].x, G.nodes[ce.v].y]);
+      if (from != null && ce.u !== from) coords.reverse();
+      return coords;
+    }
+
+    // Drop a chevron every `spacing` meters along a path, opening
+    // backwards so it reads as an arrowhead pointing forward. Spacing and
+    // arm length are ground meters, walked segment by segment so a curve
+    // gets evenly spaced arrows rather than bunched ones.
+    function chevronsAlong(coords, spacing, armM, out) {
+      let acc = spacing * 0.5;   // first arrow half a step in, not on the corner
+      for (let i = 0; i < coords.length - 1; i++) {
+        const [x1, y1] = coords[i], [x2, y2] = coords[i + 1];
+        const lat = (y1 + y2) / 2;
+        const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 111320;
+        const dx = (x2 - x1) * kx, dy = (y2 - y1) * ky;
+        const segLen = Math.hypot(dx, dy);
+        if (segLen < 0.5) continue;
+        const head = Math.atan2(dy, dx);
+        while (acc <= segLen) {
+          const px = x1 + (Math.cos(head) * acc) / kx;
+          const py = y1 + (Math.sin(head) * acc) / ky;
+          // Two arms swept back from the tip by about 34 degrees each.
+          for (const sign of [1, -1]) {
+            const a = head + Math.PI + sign * 0.6;
+            out.push({
+              type: "Feature", properties: {},
+              geometry: { type: "LineString", coordinates: [
+                [px, py],
+                [px + (Math.cos(a) * armM) / kx, py + (Math.sin(a) * armM) / ky],
+              ] },
+            });
+          }
+          acc += spacing;
+        }
+        acc -= segLen;             // carry the remainder into the next segment
+      }
+    }
+
     function drawFloods() {
       if (!G) return;
-      const feats = [], deepest = new Map();
 
-      // Two floods can overlap. Where they do, the deeper one wins, so a
+      // ---- standing water ----
+      const deepest = new Map();
+      // Two floods can overlap. Where they do the deeper one wins, so a
       // segment never draws twice at two different shades.
       for (const h of hazards) {
         if (h.type !== "flood" || !h.wet) continue;
@@ -1301,20 +1391,32 @@
           if (!deepest.has(c) || d > deepest.get(c)) deepest.set(c, d);
         }
       }
-
+      const wetFeats = [];
       for (const [c, d] of deepest) {
-        const ce = G.edges[c];
-        const coords = [[G.nodes[ce.u].x, G.nodes[ce.u].y]];
-        if (ce.geom) for (const pt of ce.geom) coords.push(pt);
-        coords.push([G.nodes[ce.v].x, G.nodes[ce.v].y]);
-        feats.push({
+        wetFeats.push({
           type: "Feature",
           properties: { depth: Math.round(d * 100) / 100 },
-          geometry: { type: "LineString", coordinates: coords },
+          geometry: { type: "LineString", coordinates: edgeShape(c, null) },
         });
       }
-      const src = map.getSource("flood-roads");
-      if (src) src.setData({ type: "FeatureCollection", features: feats });
+
+      // ---- the downhill path, and the arrows on it ----
+      const pathFeats = [], arrowFeats = [];
+      for (const h of hazards) {
+        if (h.type !== "flood" || !h.runoff) continue;
+        for (const r of h.runoff) {
+          const coords = edgeShape(r.c, r.from);
+          pathFeats.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
+          chevronsAlong(coords, 70, 14, arrowFeats);
+        }
+      }
+
+      const s1 = map.getSource("flood-roads");
+      if (s1) s1.setData({ type: "FeatureCollection", features: wetFeats });
+      const s2 = map.getSource("flood-runoff");
+      if (s2) s2.setData({ type: "FeatureCollection", features: pathFeats });
+      const s3 = map.getSource("flood-arrows");
+      if (s3) s3.setData({ type: "FeatureCollection", features: arrowFeats });
     }
 
     // Paint each fire's burn footprint.
@@ -1421,14 +1523,14 @@
       hazards.push({
         id: hazardSeq++, type: "flood",
         lng: nd.x, lat: nd.y, node: snap.n,
-        W: f.W, edges: f.edges, wet: f.wet,
+        W: f.W, edges: f.edges, wet: f.wet, runoff: f.runoff,
       });
       rebuildHazards();
       if (f.cutCount === 0) {
         // Either the water never arrived, or it arrived and stayed
         // ankle deep. Different problems, different sentences.
         if (f.wet.length === 0) {
-          showInfo("Nothing floods here. Turn the water up or pick lower ground.", true);
+          showInfo("Water runs off but never pools. Turn it up or pick lower ground.", true);
         } else {
           showInfo("Water spreads but stays under six inches. Nothing closes yet.", true);
         }
@@ -1472,7 +1574,7 @@
       for (const h of hazards) {
         if (h.type !== "flood") continue;
         const f = computeFlood(h.node, FLOOD_VOLUME);
-        h.edges = f.edges; h.wet = f.wet; h.W = f.W;
+        h.edges = f.edges; h.wet = f.wet; h.runoff = f.runoff; h.W = f.W;
         any = true;
       }
       if (any) { rebuildHazards(); reroute(); }
