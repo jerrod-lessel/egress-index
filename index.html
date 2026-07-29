@@ -1664,13 +1664,21 @@
         html = "<b>Two ways out</b>";
       } else {
         html = "<b>One way out</b>";
-        if (p.road) {
-          html += "<br>Everything here leaves by<br><b>" + p.road + "</b>";
-        }
-        if (p.pocket) {
-          html += "<br><span style='color:#9aa0a8'>" + p.pocket +
-                  " blocks share this exit</span>";
-        }
+        // Framed as an action, not a direction of travel. The old wording,
+        // "Everything here leaves by Trail Ridge Place", reads circularly
+        // when the dot you clicked is standing ON Trail Ridge Place. That
+        // is the case for 1,509 of these 2,060 dots, so it was the normal
+        // experience rather than an edge case.
+        //
+        // 70 of them have road == "unnamed", where naming it helps nobody,
+        // and 1,094 have a pocket of exactly one, where "blocks" is wrong.
+        const namedRoad = p.road && p.road !== "unnamed";
+        const what = namedRoad ? "<b>" + p.road + "</b>" : "the one road out";
+        const n = p.pocket || 1;
+        const consequence = n > 1
+          ? n + " blocks are cut off."
+          : "this block is cut off.";
+        html += "<br>Close " + what + " and " + consequence;
       }
       new maplibregl.Popup({ closeButton: false, maxWidth: "230px" })
         .setLngLat(e.lngLat).setHTML(html).addTo(map);
