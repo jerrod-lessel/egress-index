@@ -1,0 +1,37 @@
+{
+  "crs": "EPSG:3857",
+  "nx": 444,
+  "ny": 332,
+  "ground_px_m": 60,
+  "merc_px_m": 76.5995,
+  "cos_lat": 0.783295,
+  "bounds_3857": {
+    "x_min": -13676267.360898418,
+    "y_min": 4628569.75248438,
+    "x_max": -13642257.1810121,
+    "y_max": 4654000.78789487
+  },
+  "corners_4326": [
+    [
+      -122.856,
+      38.526
+    ],
+    [
+      -122.5504814,
+      38.526
+    ],
+    [
+      -122.5504814,
+      38.3470552
+    ],
+    [
+      -122.856,
+      38.3470552
+    ]
+  ],
+  "elev_min": 12.231,
+  "elev_max": 823.957,
+  "nodata_px": 1,
+  "decode": "elev = elev_min + ((R*256 + G) / 65535) * (elev_max - elev_min); alpha 0 means no data, skip the pixel",
+  "note": "Mercator meters are inflated by 1/cos_lat at this latitude. Multiply Mercator distances by cos_lat to get ground meters."
+}
