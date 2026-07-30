@@ -801,12 +801,45 @@
     }
 
     const infoEl = document.getElementById("route-info");
+    // This one element does double duty: it reports the current route AND
+    // it announces rejections. Those have different lifetimes. A route line
+    // describes state and should persist. A rejection describes a moment and
+    // should not, which is why "the ground drops too fast here" used to
+    // follow you around the map.
+    let stickyInfo = null;   // the live route line, if there is one
+    let warnTimer = 0;
+
     function showInfo(html, warn) {
+      clearTimeout(warnTimer); warnTimer = 0;
+      stickyInfo = { html, warn: !!warn };
       infoEl.innerHTML = html;
       infoEl.classList.toggle("warn", !!warn);
       infoEl.style.display = "block";
     }
-    function hideInfo() { infoEl.style.display = "none"; }
+
+    // Say it, then get out of the way. If a route is on screen, put its line
+    // back afterwards rather than leaving the panel blank.
+    function showWarn(html) {
+      clearTimeout(warnTimer);
+      infoEl.innerHTML = html;
+      infoEl.classList.add("warn");
+      infoEl.style.display = "block";
+      warnTimer = setTimeout(() => {
+        warnTimer = 0;
+        if (stickyInfo) {
+          infoEl.innerHTML = stickyInfo.html;
+          infoEl.classList.toggle("warn", stickyInfo.warn);
+        } else {
+          infoEl.style.display = "none";
+        }
+      }, 5000);
+    }
+
+    function hideInfo() {
+      clearTimeout(warnTimer); warnTimer = 0;
+      stickyInfo = null;
+      infoEl.style.display = "none";
+    }
 
     async function doRoute(startId) {
       showInfo("Finding a way out\u2026");
@@ -1498,7 +1531,7 @@
       try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
       const snap = snapToEdge(lng, lat);
       if (snap.ei < 0 || snap.d > SNAP_CAP_M) {
-        showInfo("No road within 100 m of there. Aim for a street.", true);
+        showWarn("No road within 100 m of there. Aim for a street.");
         return;
       }
       const e = G.edges[snap.ei];
@@ -1514,7 +1547,7 @@
       try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
       const nearest = nearestRoadMeters(lng, lat);
       if (nearest > FIRE_CAP_M) {
-        showInfo("Nothing out here to burn. Nearest road is over 1.5 km away.", true);
+        showWarn("Nothing out here to burn. Nearest road is over 1.5 km away.");
         return;
       }
       const p = computePlume(lng, lat);
@@ -1524,7 +1557,7 @@
       });
       rebuildHazards();
       if (p.burned === 0) {
-        showInfo(`Fire started ${Math.round(nearest)} m from the nearest road. Nothing burning yet.`, true);
+        showWarn(`Fire started ${Math.round(nearest)} m from the nearest road. Nothing burning yet.`);
       } else {
         reroute();
       }
@@ -1538,17 +1571,17 @@
       try { await loadGraph(); } catch (e) { showInfo("Road data not loaded yet.", true); return; }
       const snap = snapToNode(lng, lat);
       if (snap.n < 0 || snap.d > FLOOD_SNAP_CAP_M) {
-        showInfo("No road within 1.5 km of there. Nothing out that far to flood.", true);
+        showWarn("No road within 1.5 km of there. Nothing out that far to flood.");
         return;
       }
       if (G.nodes[snap.n].elev == null) {
-        showInfo("No elevation data on this graph, so flooding can't be modeled.", true);
+        showWarn("No elevation data on this graph, so flooding can't be modeled.");
         return;
       }
       const nd = G.nodes[snap.n];
       const f = computeFlood(snap.n, FLOOD_VOLUME);
       if (f.escaped) {
-        showInfo("The ground drops too fast here for this model to answer honestly. Try flatter ground, or less water.", true);
+        showWarn("The ground drops too fast here for this model to answer honestly. Try flatter ground, or less water.");
         return;
       }
       hazards.push({
@@ -1561,9 +1594,9 @@
         // Either the water never arrived, or it arrived and stayed
         // ankle deep. Different problems, different sentences.
         if (f.wet.length === 0) {
-          showInfo("Water runs off but never pools. Turn it up or pick lower ground.", true);
+          showWarn("Water runs off but never pools. Turn it up or pick lower ground.");
         } else {
-          showInfo("Water spreads but stays under six inches. Nothing closes yet.", true);
+          showWarn("Water spreads but stays under six inches. Nothing closes yet.");
         }
       } else {
         reroute();
