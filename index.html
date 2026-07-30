@@ -902,21 +902,38 @@
     const FLOOD_REACH_CAP_M = 4000; // past this it is not a local flood, and the
                                     // cap is what keeps a slider drag inside a frame
     const FLOOD_DEPTH_CUT_M = 0.15; // six inches. Below this a car still goes through
+    const FLOOD_ESCAPE_DEPTH_M = 5; // past this the model has run off its own
+                                    // hillside: the sloped surface outran the
+                                    // terrain and everything downhill "floods".
+                                    // Refuse rather than draw it.
     let FLOOD_VOLUME = 50000;       // cubic meters of water released, from the slider
 
-    // Log slider: 5,000 m³ at one end, 3,000,000 at the other. The range
-    // is deliberately narrower than real flood volumes span, because
-    // below 5,000 the extent stops responding (the pond just gets a
-    // little deeper in place) and above 3,000,000 it stops being local,
-    // which is the whole point of having the knob.
+    // Log slider: 2,000 m³ at one end, 40,000 at the other.
+    //
+    // This is far narrower than real flood volumes span, and the reason is
+    // measured rather than aesthetic. Volume here is spent through an
+    // assumed 30 m strip along the roads, but a real flood spreads across
+    // whole neighbourhoods, yards and fields included. The strip is much
+    // too small a container, so a large budget has nowhere to go but down.
+    // Across 520 sampled sources, the deepest water came out at:
+    //
+    //     2,000 m3  ->  median 0.32 m, p90 0.87 m
+    //    40,000 m3  ->  median 2.23 m, p90 4.03 m
+    //   200,000 m3  ->  median 4.68 m, p90 7.76 m
+    // 3,000,000 m3  ->  median 12.78 m   (the old top of this slider)
+    //
+    // Twelve metres of standing water on a city street is a lake, not a
+    // flood. 40,000 is where the physics stops holding, so that is where
+    // the slider stops. The real fix is the raster, which knows actual
+    // terrain area and lets water spread sideways instead of piling up.
     function volumeFromSlider(x) {
-      return Math.round(10 ** (3.7 + (x / 100) * 2.78));
+      return Math.round(10 ** (3.301 + (x / 100) * 1.301));
     }
     function volumeTier(v) {
-      if (v < 20000) return "Busted main";
-      if (v < 150000) return "Storm drain gives up";
-      if (v < 800000) return "Creek overtops";
-      return "Levee fails";
+      if (v < 5000) return "Cracked main";
+      if (v < 12000) return "Busted main";
+      if (v < 25000) return "Main running a while";
+      return "Storm drain gives up";
     }
 
     let hazards = [];
@@ -1177,11 +1194,21 @@
         if (p != null) cut.add(p);
       }
 
+      // How deep did this get? A sloped surface can outrun terrain going
+      // downhill, and when it does, depth is the symptom that shows it. A
+      // genuine street flood is under a couple of metres.
+      let maxDepth = 0;
+      for (const d of depthOf.values()) if (d > maxDepth) maxDepth = d;
+      const escaped = maxDepth > FLOOD_ESCAPE_DEPTH_M;
+
       return {
-        edges: [...cut],            // what the router reads
-        wet: [...depthOf.entries()],// standing water, with real depths
-        runoff,                     // the downhill path, with direction
-        W, cutCount: cut.size,
+        // On escape, hand back nothing drawable. The runoff path is still
+        // honest (water really did run downhill), so it survives.
+        edges: escaped ? [] : [...cut],
+        wet: escaped ? [] : [...depthOf.entries()],
+        runoff,
+        W, cutCount: escaped ? 0 : cut.size,
+        maxDepth, escaped,
       };
     }
 
@@ -1520,6 +1547,10 @@
       }
       const nd = G.nodes[snap.n];
       const f = computeFlood(snap.n, FLOOD_VOLUME);
+      if (f.escaped) {
+        showInfo("The ground drops too fast here for this model to answer honestly. Try flatter ground, or less water.", true);
+        return;
+      }
       hazards.push({
         id: hazardSeq++, type: "flood",
         lng: nd.x, lat: nd.y, node: snap.n,
@@ -1575,6 +1606,7 @@
         if (h.type !== "flood") continue;
         const f = computeFlood(h.node, FLOOD_VOLUME);
         h.edges = f.edges; h.wet = f.wet; h.runoff = f.runoff; h.W = f.W;
+        h.escaped = f.escaped;   // nothing draws while this is true
         any = true;
       }
       if (any) { rebuildHazards(); reroute(); }
