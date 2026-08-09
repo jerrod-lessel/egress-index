@@ -4,6 +4,8 @@
 
 Egress Index maps how many separate ways out each intersection in Santa Rosa, California actually has. Not how many roads you can see from the sidewalk. How many genuinely independent escape routes exist once you follow every one of those roads to the end.
 
+Then it lets you break the network and watch the way out rethink itself.
+
 Live: https://egress-index.jerrod-lessel.workers.dev
 
 Part of [Lessel Geospatial](https://lesselgeospatial.com). Someone has to map this mess.
@@ -34,37 +36,49 @@ One means fragile. Three or more means fine. That number is the index.
 
 **4. Count the cuts.** The amount of water that gets through always exactly equals the fewest pipes you would have to sever to stop it. This is max-flow min-cut, proven since the 1950s, and NetworkX ships with it. So one computation answers both "how many ways out" and "how many closures to trap this place."
 
-**5. Measure the pocket.** A score of 1 does not say how much is stuck behind it. A cul-de-sac tip traps one spot, which is obvious and dull. A looping subdivision can trap fifty intersections behind a single street, which is not obvious at all. So every single-egress spot also gets a pocket size: how many other spots share its trap, and the name of the street doing the trapping.
+**5. Measure the pocket.** A score of 1 does not say how much is stuck behind it. A cul-de-sac tip traps one spot, which is obvious and dull. A looping subdivision can trap dozens of intersections behind a single street, which is not obvious at all. So every single-egress spot also gets a pocket size: how many other spots share its trap, and the name of the street doing the trapping.
 
 Pocket size, not the score, is what makes the map worth looking at.
 
+**6. Route it live.** The scoring is precomputed, but the routing is not. The browser holds a graph of 6,749 nodes and 16,254 directed edges and runs A* against it, which finishes in well under a millisecond. That is what makes the hazards worth having.
+
 ## What it found
 
-Santa Rosa, 5,302 intersections, 13,210 road segments.
+Santa Rosa, 5,718 intersections displayed, routed on a graph of 6,749 nodes and 16,254 directed edges. The extra nodes are a 1,500 m halo outside the city limits, which the math routes through but the map does not draw.
 
 | Ways out | Count |
 |---|---|
-| One | 1,941 |
-| Two | 1,355 |
-| Three or more | 1,196 |
-| Already on a safety road | 808 |
+| One | 2,060 |
+| Two | 1,475 |
+| Three or more | 1,371 |
+| Already on a safety road | 812 |
 
-Of those 1,941 single-egress spots, 966 are ordinary dead end tips. Boring and correct. But 478 of them have three or more roads leaving and *still* score 1. Those are the merge illusions, and they are the reason this exists.
+Of those 2,060 single-egress spots, 1,094 trap only themselves. Ordinary dead end tips, boring and correct. The other **966 have company behind the same street**, and those are the merge illusions this exists to find.
 
-Ranked by how many blocks strand behind a single street:
+Ranked by how many intersections strand behind one street:
 
 | Blocks trapped | Street |
 |---|---|
-| 51 | Bridgewood Drive |
 | 49 | Chatham Drive |
-| 32 | Yulupa Avenue |
-| 28 | Hall Road |
-| 25 | Terra Linda Drive |
-| 25 | Summerfield Road |
+| 38 | Stone Bridge Road |
 | 25 | Northpoint Parkway |
-| 23 | Burt Street |
+| 25 | Summerfield Road |
+| 25 | Terra Linda Drive |
+| 22 | Village Parkway |
+| 15 | San Ramon Way |
+| 15 | La Mar Way |
 
-These are scattered across the whole city, east, west, and north. This is not a hills story. It is a subdivision design story.
+Scattered across the whole city, east, west, and north. This is not a hills story. It is a subdivision design story.
+
+## Break it yourself
+
+The map ships with three ways to damage the network. All three do the same thing under the hood: they stamp a cost onto edges, and the router never asks which kind of hazard produced it.
+
+- **Obstruction.** Close a specific street. The penalty is large but finite, so a boxed-in origin still returns a route, flagged in amber, rather than failing silently.
+- **Fire.** A spreading footprint with a wind direction you drag to aim. Reach is yours to set.
+- **Flood.** A volume of water, not a depth. You say how much got loose and the terrain decides where it goes. Roads close when water sits more than six inches over the lowest point of the pavement.
+
+Elevation for the flood model comes from 3DEP, sampled at roughly 9 m spacing along each road rather than at its endpoints. That is the underpass catch: a road dipping under a rail line floods at the dip, and endpoint elevations miss it entirely.
 
 ## What this is not
 
@@ -74,47 +88,67 @@ These are scattered across the whole city, east, west, and north. This is not a 
 
 ## Known limits
 
-- **Roads only.** No slope, no fuel load, no road width, no traffic capacity. A wide arterial and a narrow lane count the same. Fixing that is Phase 2.
-- **No population.** Pocket size counts intersections, not people or homes. A pocket of 51 intersections is not necessarily 51 households.
+- **Roads only.** No slope, no fuel load, no road width, no traffic capacity. A wide arterial and a narrow lane count the same.
+- **No population.** Pocket size counts intersections, not people or homes. A pocket of 49 intersections is not necessarily 49 households.
 - **Safety is a road class, not a destination.** Reaching a secondary road counts as out. In a large enough fire, that is optimistic.
 - **OpenStreetMap is crowd sourced.** Road classifications vary by whoever mapped that block.
 - **Directed graph, one direction.** Scores use drivable direction, so one way streets count as one way. Realistic, but during an actual evacuation people drive on shoulders and against traffic. The model does not.
+- **The flood model spends its water through an assumed corridor along the roads,** not across real terrain. It is a reasonable approximation at small volumes and stops being one at large ones, which is why the slider is capped at 40,000 m³ rather than left open. A terrain based version exists and is discussed below.
 
-## One bug worth documenting
+## Two bugs worth documenting
+
+### The city boundary was eating neighborhoods
+
+The first version clipped the road network at the Santa Rosa city limits, which is the obvious thing to do and is wrong.
+
+A neighborhood whose only way out runs through unincorporated county before curving back into town reads as trapped, because the road it uses was cut off the edge of the data. The model was not finding fragility. It was finding the edge of its own extract.
+
+The fix was to build on the city plus a 1,500 m halo, with boundary holes filled, and then score only the intersections meant for display. Compute wide, show narrow.
+
+This changed the answer, not just the presentation. Bridgewood Drive was the single worst trap in the first run at 51 blocks. With the halo it stops being a trap at all, because the road it depends on leaves the city and comes back. Chatham Drive survived the rebuild at 49 and is now the worst in the city.
+
+Any result that moves that much when you widen the frame was never a result. It was an artifact.
+
+### Four stowaways in every pocket
 
 The first pocket numbers were all inflated by 4.
 
 Four nodes in the OSM extract had no roads leaving them at all, which is impossible in the real world and is just junk geometry. But because they could never reach safety, the minimum cut dumped them onto the trapped side of *every* computation. They rode along in every pocket like stowaways.
 
-The tell was that zero cul-de-sac tips reported a pocket of 1. A true dead end traps exactly itself, so that number should have been large. It was zero, because every tip was reporting 3 or 5 instead.
+The tell was that zero cul-de-sac tips reported a pocket of 1. A true dead end traps exactly itself, so that number should have been large. It was zero, because every tip was reporting 3 or 5 instead. Today it is 1,094, which is what a healthy version of that number looks like.
 
-Evicting them made 966 cul-de-sacs appear exactly where they belonged, and Bridgewood Drive dropped from 53 to an honest 51. The finding survived. The number got smaller. That is usually how it goes.
+## The notebooks
 
-## Stack
+The full pipeline is in [`notebooks/`](notebooks/). GitHub renders them inline with their outputs, so they read end to end, including the run logs.
 
-No backend, no build step, no monthly cost.
+| Notebook | Produces |
+|---|---|
+| `01_egress_scoring.ipynb` | `egress_santa_rosa.geojson`, the index itself |
+| `02_routing_graph.ipynb` | `graph_santa_rosa.json`, what the browser routes on |
+| `03_elevation.ipynb` | `elev` and `emin` written back into that graph |
 
-- **Analysis:** Google Colab, OSMnx, NetworkX
-- **Data:** OpenStreetMap via OSMnx
-- **Frontend:** MapLibre GL JS, single file, CARTO dark basemap
-- **Hosting:** Cloudflare, free tier
-- **Output:** one GeoJSON, sitting next to one HTML file
+They run in order and need nothing but a free Colab session. Step 1 takes about 50 minutes, almost all of it in two loops: one max-flow per intersection, then one min-cut per trapped spot.
 
-The pipeline stores inputs rather than outputs. Scores, pocket sizes, and street names live in the GeoJSON. Colors and thresholds live in the map. Restyling never requires recomputing anything.
-
-## Rebuilding it
-
-Open the Colab notebook and run the cells top to bottom. Change one line to move the whole project to a different city:
+To move the whole project to a different city, change one line in step 1:
 
 ```python
 place = "Santa Rosa, California, USA"
 ```
 
-Scoring takes a few minutes. Pocket measurement takes a few more. Then download the GeoJSON, drop it next to `index.html`, and push.
+## Stack
 
-## Roadmap
+No backend, no build step, no monthly cost.
 
-- **Phase 2:** draw a hazard polygon and watch the safe routes recalculate, with a user controlled wind direction as a live input
-- Fuel load and slope from Google Earth Engine as additional cost layers
-- Population weighting so pocket size means households, not intersections# egress-index
-A project exploring escapability in an urban environment. 
+- **Analysis:** Google Colab, OSMnx, NetworkX, py3dep
+- **Data:** OpenStreetMap via OSMnx, USGS 3DEP elevation
+- **Frontend:** MapLibre GL JS, single file, CARTO dark basemap, A* routing in the browser
+- **Hosting:** Cloudflare, free tier
+- **Output:** one GeoJSON and one graph JSON, sitting next to one HTML file
+
+The pipeline stores inputs rather than outputs. Scores, pocket sizes, and street names live in the data. Colors and thresholds live in the map. Restyling never requires recomputing anything.
+
+## What is in here but not used
+
+`dem_santa_rosa.png`, `basins_santa_rosa.png` and `basins_santa_rosa.json` support a terrain based flood model that fills real depressions rather than an assumed corridor. It was built, verified against a measured benchmark, and deliberately not shipped: it is better physics attached to the third demonstration of a mechanism the tool already demonstrates twice.
+
+The postmortem lives at [Null Island](https://lesselgeospatial.com). The files stay here because they cost nothing and the work was real.
