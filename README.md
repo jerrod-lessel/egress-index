@@ -8,7 +8,7 @@ Then it lets you break the network and watch the way out rethink itself.
 
 Live: https://egress-index.jerrod-lessel.workers.dev
 
-Part of [Lessel Geospatial](https://lesselgeospatial.com). Someone has to map this mess.
+Part of [Lessel Geospatial](https://lesselgeospatial.com).
 
 ---
 
