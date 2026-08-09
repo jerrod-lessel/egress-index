@@ -151,4 +151,4 @@ The pipeline stores inputs rather than outputs. Scores, pocket sizes, and street
 
 `dem_santa_rosa.png`, `basins_santa_rosa.png` and `basins_santa_rosa.json` support a terrain based flood model that fills real depressions rather than an assumed corridor. It was built, verified against a measured benchmark, and deliberately not shipped: it is better physics attached to the third demonstration of a mechanism the tool already demonstrates twice.
 
-The postmortem lives at [Null Island](https://lesselgeospatial.com). The files stay here because they cost nothing and the work was real.
+The postmortem will probably live at [Null Island](https://lesselgeospatial.com) soon, I just have to find some time to write it up at some point. The files stay here because they cost nothing and the work was real (and I spent more time on them then I probably should have). 😂
